@@ -14,8 +14,22 @@ import HomePersonalization from '@/components/HomePersonalization'
 import EventsTimeline from '@/components/EventsTimeline'
 import ShareButton from '@/components/ShareButton'
 import RewardsCue from '@/components/RewardsCue'
+import HeroPetLine from '@/components/HeroPetLine'
 import { SkeletonTimeline } from '@/components/SkeletonCard'
 import FeedbackCue from '@/components/FeedbackCue'
+
+// ── Dynamic hero headline ─────────────────────────────────────────────────────
+// Server-computed based on time-of-day and day-of-week.
+
+function getDynamicHeadline(): string {
+  const now  = new Date()
+  const hour = now.getHours()
+  const day  = now.getDay() // 0=Sun 1=Mon ... 6=Sat
+  const isWeekend = day === 0 || day === 5 || day === 6
+  if (isWeekend)  return 'This weekend in Davis'
+  if (hour >= 17) return 'Tonight in Davis'
+  return 'Today in Davis'
+}
 
 // ── Live event count ──────────────────────────────────────────────────────────
 
@@ -60,22 +74,25 @@ export default function HomePage() {
 
       <main className="flex-1 max-w-[1100px] mx-auto w-full px-6 pt-6 pb-8">
 
-        {/* ── Compact brand + search + filters ─────────────────────────────── */}
+        {/* ── Hero — dynamic headline, search, pet line ─────────────────────── */}
         <section className="mb-7 animate-fade-up">
-          {/* Brand line */}
-          <div className="flex items-baseline gap-2 mb-0.5">
-            <h1 className="text-[26px] font-bold tracking-tight text-[#111111]">NearU</h1>
-            <span className="text-[14px] text-[#9CA3AF] font-normal">Your campus. Your city.</span>
-          </div>
-          <div className="flex items-center gap-2 mb-3">
-            <p className="text-[12px] text-[#C4C9D4]">Find events, food, and spots — tailored to you.</p>
-            <Suspense fallback={null}>
-              <EventCountBadge />
-            </Suspense>
+          {/* Dynamic headline */}
+          <div className="mb-3">
+            <h1 className="text-[26px] font-bold tracking-tight text-[#111111] leading-tight">
+              {getDynamicHeadline()}
+            </h1>
+            <p className="text-[14px] text-[#9CA3AF] mt-0.5">
+              Find something you&apos;ll actually want to go to
+            </p>
+            <div className="flex items-center gap-2 mt-1">
+              <Suspense fallback={null}>
+                <EventCountBadge />
+              </Suspense>
+            </div>
           </div>
 
           {/* Search + Share */}
-          <div className="flex items-center gap-2 mb-3">
+          <div className="flex items-center gap-2 mb-1">
             <Link href="/search"
               className="flex items-center gap-3 flex-1 max-w-[480px] bg-white border border-[#E5E7EB] rounded-2xl px-4 py-3 shadow-sm hover:shadow-md hover:border-[#D1D5DB] transition-all group">
               <Search className="w-4 h-4 text-[#9CA3AF] group-hover:text-[#6B7280] transition-colors" />
@@ -85,8 +102,11 @@ export default function HomePage() {
             <ShareButton />
           </div>
 
-          {/* Quick filters — horizontal scroll, never wraps */}
-          <div className="flex gap-2 overflow-x-auto scrollbar-hide pb-0.5 -mx-6 px-6">
+          {/* Pet line — taste-aware, client-side, no layout shift */}
+          <HeroPetLine />
+
+          {/* Quick filters — horizontal scroll */}
+          <div className="flex gap-2 overflow-x-auto scrollbar-hide pb-0.5 -mx-6 px-6 mt-4">
             {[
               { label: '📅 Today',            href: '/search?time=today' },
               { label: '🌙 Tonight',           href: '/search?category=events&time=today' },
@@ -101,7 +121,7 @@ export default function HomePage() {
             ))}
           </div>
 
-          {/* Rewards cue — visible to all, personalised for logged-in users */}
+          {/* Rewards cue */}
           <RewardsCue />
         </section>
 

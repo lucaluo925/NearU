@@ -7,22 +7,22 @@
  *
  * Architecture
  * ────────────
- * 1. useInterests    — explicit user preferences (saved tags / categories)
- * 2. useTasteProfile — implicit behavior profile (click counts per category / tag)
- * 3. ScoreContext    — merged view of both; snapshotted once per session
- * 4. scoreItem()     — deterministic multi-signal scorer (no ML)
- * 5. reasonFor()     — "why this is for you" label from winning signal
+ * 1. useInterests    — explicit user preferences
+ * 2. useTasteProfile — implicit behavior profile (click counts)
+ * 3. ScoreContext    — merged snapshot, stable per session
+ * 4. scoreItem()     — deterministic multi-signal scorer
+ * 5. reasonFor()     — per-card "why" label
  * 6. parseIntent()   — rule-based NL parser → structured filters
- * 7. intentBoost()   — extra score bonus for intent-matched items
- * 8. AssistantActions — quick-action pills, reordered by dominant taste
- * 9. IntentBar       — compact free-text assistant input
- * 10. PetWhisper     — taste-aware / intent-aware amber bubble
+ * 7. intentBoost()   — extra score bonus for intent matches
+ * 8. PetAssistantBar — persistent bar, never auto-dismisses
+ * 9. PetChatPanel    — full localStorage-backed chat history modal
+ * 10. IntentBar      — free-text assistant input
  */
 
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import Link from 'next/link'
 import Image from 'next/image'
-import { Settings2, MapPin, Clock, Sparkles } from 'lucide-react'
+import { Settings2, MapPin, Clock, Sparkles, X } from 'lucide-react'
 import dynamic from 'next/dynamic'
 
 import { useInterests }    from '@/hooks/useInterests'
@@ -45,129 +45,76 @@ const InterestsOnboarding = dynamic(
   { ssr: false },
 )
 
-// ScoreContext, buildScoreContext, scoreItem, reasonFor, ScoredItem
-// are all imported from @/lib/recommendations (shared with /for-you page).
-
 // ── Intent scoring helpers ────────────────────────────────────────────────────
-//
-// Applied on top of base scoreItem() when the user has expressed explicit intent.
 
-/** Extra score boost for items that match the parsed intent. */
 function intentBoost(item: Item, intent: ParsedIntent): number {
   let boost = 0
   const itemTags = (item.tags ?? []).map(t => t.toLowerCase())
-
-  // Strong match: user explicitly named this category
   if (intent.categories.includes(item.category))                     boost += 5
-
-  // Each intent-derived tag match (from vibe expansion or explicit tag)
   boost += itemTags.filter(t => intent.tags.includes(t)).length * 3
-
-  // Tonight boost: items happening soon get extra priority
   if (intent.time === 'today' && item.start_time) {
     const h = (new Date(item.start_time).getTime() - Date.now()) / 3_600_000
     if (h > 0 && h < 24) boost += 4
   }
-
   return boost
 }
 
-/** Per-card "why" label when showing intent results. */
 function intentReason(item: Item, intent: ParsedIntent): string | null {
   const itemTags = (item.tags ?? []).map(t => t.toLowerCase())
-
   if (intent.vibes.includes('chill') && itemTags.some(t => ['outdoor', 'quiet', 'coffee', 'cafe', 'study-spot'].includes(t)))
     return 'Chill vibes ✓'
-
   if (intent.vibes.includes('social') && itemTags.some(t => ['social-party', 'live-music', 'student-friendly'].includes(t)))
     return 'Social vibes ✓'
-
   if (intent.vibes.includes('outdoorsy') && item.category === 'outdoor')
     return 'Outdoor ✓'
-
   if (intent.budget === 'free' && itemTags.includes('free'))
     return 'Free to attend'
-
   if (intent.time === 'today' && item.start_time) {
     const h = (new Date(item.start_time).getTime() - Date.now()) / 3_600_000
     if (h > 0 && h < 24) return 'Happening tonight'
   }
-
   if (intent.region === 'on-campus') return 'Near campus'
-
   if (intent.categories.includes(item.category)) return 'Matches what you asked'
-
   return null
 }
 
-// ── Pet messages ──────────────────────────────────────────────────────────────
+// ── Chat memory ───────────────────────────────────────────────────────────────
 //
-// Taste-aware: if we know the user's dominant category, reference it.
-// Low-frequency: only fires at mount + every 4th scroll-into-view.
+// Stored in localStorage under `nearu-pet-chat`.
+// Format: { messages: [{ text, items, ts }] }
+// Newest first; capped at 20 entries; never auto-deleted.
 
-const TASTE_MSGS: Record<string, string[]> = {
-  food:     [
-    'you always end up around food spots 😌',
-    'another food spot — because of course 🍜',
-    'your stomach guided me here 🐾',
-  ],
-  events:   [
-    "you've been in an event mood lately 🎉",
-    'found one more event I think you\'d like',
-    'your calendar is filling up 😄',
-  ],
-  outdoor:  [
-    'you keep drifting toward outdoor places 🌿',
-    'fresh air vibes, as usual 🐾',
-    'outside again? love it',
-  ],
-  study:    [
-    'study mode: engaged ☕',
-    'found another good focus spot',
-    'keeping your study game strong 📚',
-  ],
-  shopping: [
-    'found something worth browsing 🛍️',
-    'your shopping radar is on',
-  ],
-  campus:   [
-    'staying close to campus 🎓',
-    'on-campus energy today',
-  ],
+const CHAT_KEY = 'nearu-pet-chat'
+const CHAT_MAX = 20
+
+interface ChatItem {
+  id:              string
+  title:           string
+  category:        string
+  flyer_image_url?: string | null
 }
 
-const GENERIC_MSGS = [
-  "this feels like your kind of thing 👀",
-  "I thought you'd like this 🐾",
-  "ooh, this one's for you 🎯",
-  "bet you'd enjoy this 🌟",
-  "this one caught my eye for you 🐾",
-]
-
-function getPetMsg(
-  trigger:    'mount' | 'scroll',
-  dominantCat: string | null,
-  item?:      Item,
-): string {
-  if (trigger === 'mount') {
-    if (dominantCat && TASTE_MSGS[dominantCat])
-      return TASTE_MSGS[dominantCat][0]
-    return "I thought you'd like these 🐾"
-  }
-  // scroll: comment on the specific item's category if it matches
-  const cat = item?.category
-  if (cat && TASTE_MSGS[cat]) {
-    const pool = TASTE_MSGS[cat]
-    return pool[Math.floor(Math.random() * pool.length)]
-  }
-  return GENERIC_MSGS[Math.floor(Math.random() * GENERIC_MSGS.length)]
+interface ChatMessage {
+  text:  string
+  items: ChatItem[]
+  ts:    number
 }
 
-function firePet(message: string, type: 'bounce' | 'celebrate' | 'excited' = 'excited') {
-  if (typeof window === 'undefined') return
-  window.dispatchEvent(
-    new CustomEvent('pet:react', { detail: { type, message, context: 'for-you' } }),
-  )
+function loadChat(): ChatMessage[] {
+  try {
+    const raw = localStorage.getItem(CHAT_KEY)
+    if (!raw) return []
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed?.messages) ? parsed.messages : []
+  } catch { return [] }
+}
+
+function appendChat(msg: ChatMessage): void {
+  try {
+    const existing = loadChat()
+    const updated  = [msg, ...existing].slice(0, CHAT_MAX)
+    localStorage.setItem(CHAT_KEY, JSON.stringify({ messages: updated }))
+  } catch {}
 }
 
 // ── Colour gradients ──────────────────────────────────────────────────────────
@@ -181,24 +128,160 @@ const CAT_GRADIENT: Record<string, string> = {
   events:   'from-rose-100 to-pink-50',
 }
 
-// ── Pet whisper bubble ────────────────────────────────────────────────────────
+// ── Pet Assistant Bar ─────────────────────────────────────────────────────────
+// Persistent: never auto-disappears. Message updates when user interacts.
 
-function PetWhisper({ msg }: { msg: string | null }) {
-  if (!msg) return null
+function PetAssistantBar({
+  message,
+  onOpenChat,
+}: {
+  message:     string
+  onOpenChat:  () => void
+}) {
   return (
-    <div className="flex items-center gap-2 mb-3 animate-fade-up">
-      <span className="text-[18px] select-none" aria-hidden>🐾</span>
-      <div className="bg-[#FEF9C3] border border-amber-200 rounded-xl px-3 py-1.5 shadow-sm">
-        <p className="text-[12px] text-[#92400E] font-medium leading-snug">{msg}</p>
+    <div className="flex items-center gap-2 mb-3 px-3 py-2 bg-amber-50 border border-amber-100 rounded-xl">
+      <span className="text-[16px] shrink-0 select-none" aria-hidden>🐶</span>
+      <p className="flex-1 text-[12px] text-[#92400E] font-medium leading-snug min-w-0 truncate">
+        {message}
+      </p>
+      <button
+        onClick={onOpenChat}
+        className="shrink-0 text-[11px] font-semibold text-amber-700 hover:text-amber-900 transition-colors whitespace-nowrap"
+      >
+        view chat ›
+      </button>
+    </div>
+  )
+}
+
+// ── Mini card for chat panel ──────────────────────────────────────────────────
+
+function ChatMiniCard({ item, onClose }: { item: ChatItem; onClose: () => void }) {
+  const cat      = CATEGORIES.find(c => c.slug === item.category)
+  const gradient = CAT_GRADIENT[item.category] ?? 'from-[#F3F4F6] to-[#E9EAEC]'
+
+  return (
+    <Link
+      href={`/listing/${item.id}`}
+      onClick={onClose}
+      className="flex items-center gap-2.5 bg-white border border-[#F3F4F6] rounded-xl px-3 py-2 hover:border-[#E5E7EB] hover:bg-[#FAFAFA] transition-all group"
+    >
+      {item.flyer_image_url ? (
+        <div className="relative w-8 h-8 rounded-lg overflow-hidden shrink-0">
+          <Image
+            src={item.flyer_image_url}
+            alt={item.title}
+            fill
+            className="object-cover"
+            sizes="32px"
+          />
+        </div>
+      ) : (
+        <div className={cn('w-8 h-8 rounded-lg bg-gradient-to-br flex items-center justify-center shrink-0', gradient)}>
+          <span className="text-[13px] opacity-60">{cat?.icon ?? '📌'}</span>
+        </div>
+      )}
+      <span className="text-[12px] font-medium text-[#374151] group-hover:text-[#111111] line-clamp-1 flex-1 min-w-0">
+        {item.title}
+      </span>
+      <span className="text-[10px] text-[#C4C9D4] group-hover:text-[#9CA3AF] shrink-0">→</span>
+    </Link>
+  )
+}
+
+// ── Pet Chat Panel ────────────────────────────────────────────────────────────
+// Bottom sheet on mobile, centred modal on desktop.
+// Shows full localStorage chat history with item cards per message.
+
+function PetChatPanel({
+  messages,
+  onClose,
+}: {
+  messages: ChatMessage[]
+  onClose:  () => void
+}) {
+  const fmtTime = (ts: number) =>
+    new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+
+  // Close on backdrop click
+  function handleBackdrop(e: React.MouseEvent<HTMLDivElement>) {
+    if (e.target === e.currentTarget) onClose()
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/30 backdrop-blur-sm"
+      onClick={handleBackdrop}
+    >
+      <div className="relative w-full max-w-[480px] max-h-[82vh] bg-white rounded-t-3xl sm:rounded-3xl shadow-2xl flex flex-col overflow-hidden animate-fade-up">
+
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 pt-5 pb-3 border-b border-[#F3F4F6] shrink-0">
+          <div className="flex items-center gap-2">
+            <span className="text-[20px] select-none" aria-hidden>🐶</span>
+            <div>
+              <p className="text-[14px] font-bold text-[#111111]">Pet Assistant</p>
+              <p className="text-[11px] text-[#9CA3AF]">your recent searches</p>
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            className="w-8 h-8 flex items-center justify-center rounded-full bg-[#F3F4F6] hover:bg-[#E5E7EB] transition-colors text-[#6B7280]"
+            aria-label="Close"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* Messages */}
+        <div className="flex-1 overflow-y-auto px-4 py-3 flex flex-col gap-5">
+          {messages.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-14 text-center gap-3">
+              <span className="text-[44px]" aria-hidden>🐾</span>
+              <p className="text-[13px] font-semibold text-[#374151]">No searches yet</p>
+              <p className="text-[12px] text-[#9CA3AF] max-w-[240px]">
+                Try asking something like<br />
+                &ldquo;chill spots tonight&rdquo; or &ldquo;free food&rdquo;
+              </p>
+            </div>
+          ) : (
+            messages.map((msg, i) => (
+              <div key={`${msg.ts}-${i}`}>
+                {/* Pet bubble */}
+                <div className="flex items-start gap-2 mb-2">
+                  <span className="text-[14px] shrink-0 mt-0.5 select-none" aria-hidden>🐶</span>
+                  <div className="flex-1 min-w-0">
+                    <div className="inline-block bg-amber-50 border border-amber-100 rounded-2xl rounded-tl-sm px-3 py-2 mb-1 max-w-full">
+                      <p className="text-[13px] text-[#92400E] font-medium leading-snug">{msg.text}</p>
+                    </div>
+                    <p className="text-[10px] text-[#C4C9D4] ml-1">{fmtTime(msg.ts)}</p>
+                  </div>
+                </div>
+                {/* Cards */}
+                {msg.items.length > 0 && (
+                  <div className="ml-6 flex flex-col gap-1.5">
+                    {msg.items.slice(0, 3).map(item => (
+                      <ChatMiniCard key={item.id} item={item} onClose={onClose} />
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))
+          )}
+        </div>
+
+        {/* Footer hint */}
+        <div className="px-5 py-3 border-t border-[#F3F4F6] bg-[#FAFAFA] shrink-0">
+          <p className="text-[11px] text-[#C4C9D4] text-center">
+            Use the search bar to ask me anything
+          </p>
+        </div>
       </div>
     </div>
   )
 }
 
 // ── Assistant quick actions ───────────────────────────────────────────────────
-//
-// Four pre-baked links that reuse existing filters.
-// The action matching the user's dominant taste floats to the front.
 
 interface AssistantAction { label: string; href: string; cat?: string }
 
@@ -236,48 +319,27 @@ function AssistantActions({ dominantCat }: { dominantCat: string | null }) {
 // ── Card ──────────────────────────────────────────────────────────────────────
 
 interface CardProps {
-  item:         Item
-  reason?:      string | null
-  showBadge?:   boolean
-  highlighted?: boolean
-  onVisible?:   () => void
-  onClick?:     (item: Item) => void
+  item:       Item
+  reason?:    string | null
+  showBadge?: boolean
+  onClick?:   (item: Item) => void
 }
 
-function ForYouCard({ item, reason, showBadge, highlighted, onVisible, onClick }: CardProps) {
+function ForYouCard({ item, reason, showBadge, onClick }: CardProps) {
   const cat      = CATEGORIES.find(c => c.slug === item.category)
   const gradient = CAT_GRADIENT[item.category] ?? 'from-[#F3F4F6] to-[#E9EAEC]'
   const time     = item.start_time ? formatTime(item.start_time) : null
   const loc      = item.location_name ?? item.city ?? ''
-  const linkRef  = useRef<HTMLAnchorElement>(null)
-  const cbRef    = useRef(onVisible)
-  useEffect(() => { cbRef.current = onVisible }, [onVisible])
-
-  // Single IntersectionObserver per card — fires once when 60 % visible
-  useEffect(() => {
-    const el = linkRef.current
-    if (!el || !cbRef.current) return
-    const obs = new IntersectionObserver(
-      ([entry]) => { if (entry.isIntersecting) cbRef.current?.() },
-      { threshold: 0.6 },
-    )
-    obs.observe(el)
-    return () => obs.disconnect()
-  }, []) // stable mount-only
 
   return (
     <Link
-      ref={linkRef}
       href={`/listing/${item.id}`}
       onClick={() => onClick?.(item)}
       className={cn(
         'group flex-none overflow-hidden flex flex-col',
-        'w-[76vw] max-w-[260px] sm:w-[220px]',
-        'h-[244px] bg-white rounded-2xl border shadow-sm',
+        'w-[80vw] max-w-[260px] md:max-w-[320px]',
+        'h-[244px] bg-white rounded-2xl border border-[#E5E7EB] shadow-sm',
         'hover:shadow-md hover:-translate-y-0.5 transition-all duration-200',
-        highlighted
-          ? 'border-amber-300 ring-2 ring-amber-200/60 shadow-amber-100'
-          : 'border-[#E5E7EB]',
       )}
     >
       {/* Image / gradient hero */}
@@ -288,7 +350,7 @@ function ForYouCard({ item, reason, showBadge, highlighted, onVisible, onClick }
             alt={item.title}
             fill
             className="object-cover group-hover:scale-[1.03] transition-transform duration-300"
-            sizes="(max-width:640px) 76vw, 220px"
+            sizes="(max-width:640px) 80vw, (max-width:768px) 260px, 320px"
           />
         ) : (
           <div className="absolute inset-0 flex items-center justify-center">
@@ -313,11 +375,8 @@ function ForYouCard({ item, reason, showBadge, highlighted, onVisible, onClick }
           {item.title}
         </h3>
 
-        {/* Why-this-is-for-you label */}
         {reason ? (
-          <p className="text-[10px] text-[#9CA3AF] mt-0.5 leading-tight truncate">
-            {reason}
-          </p>
+          <p className="text-[10px] text-[#9CA3AF] mt-0.5 leading-tight truncate">{reason}</p>
         ) : (
           <div className="h-[14px]" />
         )}
@@ -348,7 +407,7 @@ function ForYouCard({ item, reason, showBadge, highlighted, onVisible, onClick }
 
 function CardSkeleton() {
   return (
-    <div className="flex-none w-[76vw] max-w-[260px] sm:w-[220px] h-[244px] bg-white rounded-2xl border border-[#E5E7EB] overflow-hidden animate-pulse">
+    <div className="flex-none w-[80vw] max-w-[260px] md:max-w-[320px] h-[244px] bg-white rounded-2xl border border-[#E5E7EB] overflow-hidden animate-pulse">
       <div className="h-[120px] bg-[#F3F4F6]" />
       <div className="p-3 flex flex-col gap-2 mt-1">
         <div className="h-3 bg-[#F3F4F6] rounded w-3/4" />
@@ -358,44 +417,19 @@ function CardSkeleton() {
   )
 }
 
-// ScoredItem is imported from @/lib/recommendations
-
 // ── Feed section ──────────────────────────────────────────────────────────────
 
 interface FeedProps {
   savedTags:   string[]
   savedCats:   string[]
-  /** Session-snapshotted context — passed once, not reactive */
   ctx:         ScoreContext
-  onPetMsg:    (msg: string) => void
   recordClick: (item: Item) => void
-  dominantCat: string | null
 }
 
-function ForYouSection({
-  savedTags,
-  savedCats,
-  ctx,
-  onPetMsg,
-  recordClick,
-  dominantCat,
-}: FeedProps) {
-  const [scored, setScored]             = useState<ScoredItem[]>([])
-  const [loading, setLoading]           = useState(true)
-  const [highlightedId, setHighlightedId] = useState<string | null>(null)
+function ForYouSection({ savedTags, savedCats, ctx, recordClick }: FeedProps) {
+  const [scored, setScored] = useState<ScoredItem[]>([])
+  const [loading, setLoading] = useState(true)
 
-  // Stable refs so callbacks don't need to be in effect deps
-  const onPetRef     = useRef(onPetMsg)
-  const dominantRef  = useRef(dominantCat)
-  const seenIds      = useRef(new Set<string>())
-  const cardsSeen    = useRef(0)
-  useEffect(() => { onPetRef.current    = onPetMsg    }, [onPetMsg])
-  useEffect(() => { dominantRef.current = dominantCat }, [dominantCat])
-
-  // ── Fetch + score (runs once per session on mount) ────────────────────────
-  // Uses fetchScoredFeed() from @/lib/recommendations.
-  // Always fetches — falls back to recents when savedTags is empty so the
-  // section always shows real cards even for brand-new users.
   useEffect(() => {
     let cancelled = false
 
@@ -404,7 +438,7 @@ function ForYouSection({
         const result = await fetchScoredFeed(ctx, savedTags, 16)
         if (!cancelled) setScored(result)
       } catch {
-        // silent — a network blip should not break the homepage
+        // silent — network blip should not break the homepage
       } finally {
         if (!cancelled) setLoading(false)
       }
@@ -415,25 +449,9 @@ function ForYouSection({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [savedTags.join(','), savedCats.join(',')])
 
-  // ── Pet trigger on card scroll-into-view ─────────────────────────────────
-  const handleCardVisible = useCallback((item: Item) => {
-    if (seenIds.current.has(item.id)) return
-    seenIds.current.add(item.id)
-    cardsSeen.current++
-
-    // Fire pet every 4th new card — low frequency, non-spammy
-    if (cardsSeen.current % 4 === 0) {
-      const msg = getPetMsg('scroll', dominantRef.current, item)
-      onPetRef.current(msg)
-      firePet(msg, 'excited')
-      setHighlightedId(item.id)
-      setTimeout(() => setHighlightedId(null), 2_500)
-    }
-  }, []) // stable — all live values accessed via refs
-
   if (loading) {
     return (
-      <div className="flex gap-3 overflow-x-auto pb-2 -mx-6 px-6 scrollbar-hide">
+      <div className="flex gap-4 overflow-x-auto pb-2 -mx-6 px-6 scrollbar-hide">
         {Array.from({ length: 4 }).map((_, i) => <CardSkeleton key={i} />)}
       </div>
     )
@@ -443,7 +461,7 @@ function ForYouSection({
 
   return (
     <div
-      className="flex gap-3 overflow-x-auto pb-3 -mx-6 px-6 scrollbar-hide"
+      className="flex gap-4 overflow-x-auto pb-3 -mx-6 px-6 scrollbar-hide"
       style={{ scrollSnapType: 'x mandatory', WebkitOverflowScrolling: 'touch' }}
     >
       {scored.map(({ item, reason }, idx) => (
@@ -452,8 +470,6 @@ function ForYouSection({
             item={item}
             reason={reason}
             showBadge={idx < 3}
-            highlighted={highlightedId === item.id}
-            onVisible={() => handleCardVisible(item)}
             onClick={recordClick}
           />
         </div>
@@ -473,8 +489,6 @@ interface IntentBarProps {
 
 function IntentBar({ intentMode, loading, onSubmit, onClear }: IntentBarProps) {
   const [value, setValue] = useState('')
-
-  // Clear local input when intent mode is dismissed from outside
   useEffect(() => { if (!intentMode) setValue('') }, [intentMode])
 
   function handleSubmit(e: React.FormEvent) {
@@ -545,9 +559,7 @@ function IntentResults({ scored, onClear, recordClick }: IntentResultsProps) {
   if (scored.length === 0) {
     return (
       <div className="py-8 text-center">
-        <p className="text-[13px] text-[#9CA3AF] mb-3">
-          No great matches — try different words
-        </p>
+        <p className="text-[13px] text-[#9CA3AF] mb-3">No great matches — try different words</p>
         <button
           onClick={onClear}
           className="text-[12px] font-medium text-[#D97706] hover:text-[#B45309] transition-colors"
@@ -561,7 +573,7 @@ function IntentResults({ scored, onClear, recordClick }: IntentResultsProps) {
   return (
     <>
       <div
-        className="flex gap-3 overflow-x-auto pb-3 -mx-6 px-6 scrollbar-hide"
+        className="flex gap-4 overflow-x-auto pb-3 -mx-6 px-6 scrollbar-hide"
         style={{ scrollSnapType: 'x mandatory', WebkitOverflowScrolling: 'touch' }}
       >
         {scored.map(({ item, reason }, idx) => (
@@ -603,68 +615,53 @@ export default function HomePersonalization() {
 
   const [showModal, setShowModal]   = useState(false)
   const [showForYou, setShowForYou] = useState(false)
-  const [petMsg, setPetMsg]         = useState<string | null>(null)
-  const petTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const greetedRef  = useRef(false)
+
+  // ── Persistent assistant bar ──────────────────────────────────────────────
+  // Never auto-clears — only changes when user interacts or hydrates.
+  const [assistantMsg, setAssistantMsg] = useState('finding picks for you 🐾')
+  const [chatOpen, setChatOpen]         = useState(false)
+  const [chatHistory, setChatHistory]   = useState<ChatMessage[]>([])
 
   // ── Intent state ──────────────────────────────────────────────────────────
   const [intentMode, setIntentMode]       = useState(false)
   const [intentLoading, setIntentLoading] = useState(false)
   const [intentScored, setIntentScored]   = useState<ScoredItem[]>([])
 
-  // Derived from both explicit interests and implicit behaviour profile
   const dominantCat = getDominantTaste(profile)
 
-  // ScoreContext is memoized so ForYouSection doesn't re-run its effect
-  // when unrelated state changes.  Deps stringify only the data that matters.
   const ctx = useMemo(
     () => buildScoreContext(interests, profile),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [
       allTags.join(','),
       interests.categories.join(','),
-      // Only rebuild on meaningful profile changes (not on every tiny click)
       topNKeys(profile.categoryCounts, 3).join(','),
       topNKeys(profile.tagCounts, 10).join(','),
     ],
   )
 
-  // Show onboarding modal on first visit; mark section ready on hydration
+  // On hydration: show section, load chat, set taste-aware assistant message
   useEffect(() => {
     if (!interestsHydrated) return
     if (shouldShowOnboarding) setShowModal(true)
-    setShowForYou(true)  // always show the section once hydrated
-  }, [interestsHydrated, shouldShowOnboarding])
+    setShowForYou(true)
+    setChatHistory(loadChat())
 
-  // Taste-aware greeting — fires 1.2 s after hydration, once per session
-  useEffect(() => {
-    if (!showForYou || greetedRef.current) return
-    greetedRef.current = true
+    const now     = new Date().getHours()
     const summary = tasteSummary(profile)
-    const msg = summary
-      ? `you always end up around ${summary} 😌`
-      : getPetMsg('mount', dominantCat)
-    const t = setTimeout(() => {
-      showMsg(msg)
-      firePet(msg, 'bounce')
-    }, 1_200)
-    return () => clearTimeout(t)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showForYou])
-
-  const showMsg = useCallback((msg: string, persist = false) => {
-    setPetMsg(msg)
-    if (petTimerRef.current) clearTimeout(petTimerRef.current)
-    if (!persist) {
-      petTimerRef.current = setTimeout(() => setPetMsg(null), 4_000)
+    if (summary) {
+      setAssistantMsg(`you always end up around ${summary} 😌`)
+    } else if (now >= 17) {
+      setAssistantMsg('you might like these tonight 👀')
+    } else if (now >= 12) {
+      setAssistantMsg('picked some things for you 🎯')
+    } else {
+      setAssistantMsg("here's what's on today 🌅")
     }
-  }, [])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [interestsHydrated])
 
-  useEffect(() => () => {
-    if (petTimerRef.current) clearTimeout(petTimerRef.current)
-  }, [])
-
-  // Stable ref to ctx so the intent handler doesn't need ctx in its dep array
+  // Stable ref to ctx so intent handler doesn't need ctx in its dep array
   const ctxRef = useRef(ctx)
   useEffect(() => { ctxRef.current = ctx }, [ctx])
 
@@ -674,10 +671,9 @@ export default function HomePersonalization() {
     setIntentMode(false)
 
     try {
-      const intent = parseIntent(query)
+      const intent     = parseIntent(query)
       const currentCtx = ctxRef.current
 
-      // Build API params from intent signals
       const params = new URLSearchParams({ limit: '60', sort: 'recent' })
       if (intent.categories.length === 1) params.set('category', intent.categories[0])
       if (intent.time)                    params.set('time', intent.time)
@@ -688,10 +684,9 @@ export default function HomePersonalization() {
         params.set('radius', intent.region === 'on-campus' ? '1' : '5')
       }
 
-      const res          = await fetch(`/api/items?${params}`)
+      const res           = await fetch(`/api/items?${params}`)
       const items: Item[] = res.ok ? await res.json() : []
 
-      // Score: base signals + intent boost; filter exclusions
       const scored: ScoredItem[] = items
         .filter(item => !intent.exclusions.includes(item.category))
         .map(item => ({
@@ -703,29 +698,44 @@ export default function HomePersonalization() {
         .slice(0, 12)
 
       const msg = buildIntentResponse(intent, scored.length)
+
+      // Update persistent assistant bar — no timer, stays until next interaction
+      setAssistantMsg(msg)
+
+      // Save to localStorage chat history with top-3 items
+      const chatMsg: ChatMessage = {
+        text:  msg,
+        items: scored.slice(0, 3).map(s => ({
+          id:              s.item.id,
+          title:           s.item.title,
+          category:        s.item.category,
+          flyer_image_url: s.item.flyer_image_url,
+        })),
+        ts: Date.now(),
+      }
+      appendChat(chatMsg)
+      setChatHistory(loadChat())
+
       setIntentScored(scored)
-      showMsg(msg, true)  // persist until user clears
       setIntentMode(true)
-      firePet(msg, 'excited')
     } catch {
       // silent
     } finally {
       setIntentLoading(false)
     }
-  }, [showMsg])
+  }, [])
 
   const handleIntentClear = useCallback(() => {
     setIntentMode(false)
     setIntentScored([])
-    setPetMsg(null)
-    if (petTimerRef.current) clearTimeout(petTimerRef.current)
   }, [])
 
   return (
     <>
-      {/* ── For You 🔥 — always shown once hydrated ─────────────────────────── */}
+      {/* ── For You 🔥 ─────────────────────────────────────────────────────────── */}
       {showForYou && (
         <section className="mb-10 animate-fade-up">
+
           {/* Header row: title + "See all" + "Edit" */}
           <div className="flex items-center justify-between gap-3 mb-2">
             <div className="flex items-center gap-3">
@@ -746,13 +756,16 @@ export default function HomePersonalization() {
             </button>
           </div>
 
-          {/* Pet whisper — taste-aware, low-frequency */}
-          <PetWhisper msg={petMsg} />
+          {/* Persistent pet assistant bar — never auto-disappears */}
+          <PetAssistantBar
+            message={assistantMsg}
+            onOpenChat={() => setChatOpen(true)}
+          />
 
-          {/* Assistant quick actions */}
+          {/* Quick action pills */}
           <AssistantActions dominantCat={dominantCat} />
 
-          {/* Intent input bar */}
+          {/* ChatGPT-lite intent input */}
           <IntentBar
             intentMode={intentMode}
             loading={intentLoading}
@@ -760,7 +773,7 @@ export default function HomePersonalization() {
             onClear={handleIntentClear}
           />
 
-          {/* Results: intent mode replaces the default For You feed */}
+          {/* Feed: intent results replace the default For You cards */}
           {intentMode ? (
             <IntentResults
               scored={intentScored}
@@ -772,13 +785,11 @@ export default function HomePersonalization() {
               savedTags={allTags}
               savedCats={interests.categories}
               ctx={ctx}
-              onPetMsg={showMsg}
               recordClick={recordClick}
-              dominantCat={dominantCat}
             />
           )}
 
-          {/* Subtle personalise nudge — only if no interests set yet */}
+          {/* Subtle personalise nudge — only if no interests set */}
           {!hasInterests && !showModal && (
             <div className="flex items-center justify-between mt-3 px-1">
               <p className="text-[11px] text-[#C4C9D4]">
@@ -796,7 +807,7 @@ export default function HomePersonalization() {
         </section>
       )}
 
-      {/* ── Interests modal ───────────────────────────────────────────────────── */}
+      {/* ── Interests onboarding modal ────────────────────────────────────────── */}
       {showModal && (
         <InterestsOnboarding
           onClose={() => {
@@ -804,6 +815,14 @@ export default function HomePersonalization() {
             dismiss()
             setShowForYou(true)
           }}
+        />
+      )}
+
+      {/* ── Pet chat panel ────────────────────────────────────────────────────── */}
+      {chatOpen && (
+        <PetChatPanel
+          messages={chatHistory}
+          onClose={() => setChatOpen(false)}
         />
       )}
     </>
