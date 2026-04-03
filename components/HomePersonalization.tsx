@@ -335,22 +335,17 @@ function ForYouCard({ item, reason, showBadge, onClick }: CardProps) {
     <Link
       href={`/listing/${item.id}`}
       onClick={() => onClick?.(item)}
-      className={cn(
-        'group flex-none overflow-hidden flex flex-col',
-        'w-[80vw] max-w-[260px] md:max-w-[320px]',
-        'h-[244px] bg-white rounded-2xl border border-[#E5E7EB] shadow-sm',
-        'hover:shadow-md hover:-translate-y-0.5 transition-all duration-200',
-      )}
+      className="group h-[260px] bg-white rounded-2xl border border-[#E5E7EB] shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all duration-200 overflow-hidden flex flex-col"
     >
-      {/* Image / gradient hero */}
-      <div className={cn('relative h-[120px] shrink-0 bg-gradient-to-br', gradient)}>
+      {/* Image — always 140px */}
+      <div className={cn('relative h-[140px] w-full shrink-0 overflow-hidden bg-gradient-to-br', gradient)}>
         {item.flyer_image_url ? (
           <Image
             src={item.flyer_image_url}
             alt={item.title}
             fill
             className="object-cover group-hover:scale-[1.03] transition-transform duration-300"
-            sizes="(max-width:640px) 80vw, (max-width:768px) 260px, 320px"
+            sizes="(max-width:640px) 50vw, (max-width:1024px) 33vw, 25vw"
           />
         ) : (
           <div className="absolute inset-0 flex items-center justify-center">
@@ -368,35 +363,27 @@ function ForYouCard({ item, reason, showBadge, onClick }: CardProps) {
 
       {/* Body */}
       <div className="flex flex-col p-3 flex-1 overflow-hidden">
-        <h3
-          className="text-[13px] font-bold text-[#111111] leading-snug line-clamp-2 group-hover:text-[#333] transition-colors"
-          style={{ minHeight: '2.4em' }}
-        >
+        <h3 className="text-[13px] font-bold text-[#111111] leading-snug line-clamp-2 h-[40px] group-hover:text-[#333] transition-colors">
           {item.title}
         </h3>
-
-        {reason ? (
+        {reason && (
           <p className="text-[10px] text-[#9CA3AF] mt-0.5 leading-tight truncate">{reason}</p>
-        ) : (
-          <div className="h-[14px]" />
         )}
-
-        <div className="flex-1" />
-
-        <p className="flex items-center gap-1 text-[11px] text-[#9CA3AF] h-[16px] overflow-hidden">
-          {loc && <MapPin className="w-2.5 h-2.5 shrink-0" />}
-          <span className="line-clamp-1">{loc}</span>
-        </p>
-
-        <div className="flex items-center gap-1 text-[10px] font-medium text-[#6B7280] h-[18px] mt-0.5 overflow-hidden">
-          {time ? (
-            <>
-              <Clock className="w-2.5 h-2.5 shrink-0 text-[#9CA3AF]" />
-              <span>{time}</span>
-            </>
-          ) : (
-            <span className="text-[#C4C9D4] capitalize">{item.category}</span>
-          )}
+        <div className="mt-auto">
+          <p className="flex items-center gap-1 text-[11px] text-[#9CA3AF] overflow-hidden">
+            {loc && <MapPin className="w-2.5 h-2.5 shrink-0" />}
+            <span className="truncate">{loc}</span>
+          </p>
+          <div className="flex items-center gap-1 text-[10px] font-medium text-[#6B7280] mt-0.5">
+            {time ? (
+              <>
+                <Clock className="w-2.5 h-2.5 shrink-0 text-[#9CA3AF]" />
+                <span>{time}</span>
+              </>
+            ) : (
+              <span className="text-[#C4C9D4] capitalize">{item.category}</span>
+            )}
+          </div>
         </div>
       </div>
     </Link>
@@ -407,8 +394,8 @@ function ForYouCard({ item, reason, showBadge, onClick }: CardProps) {
 
 function CardSkeleton() {
   return (
-    <div className="flex-none w-[80vw] max-w-[260px] md:max-w-[320px] h-[244px] bg-white rounded-2xl border border-[#E5E7EB] overflow-hidden animate-pulse">
-      <div className="h-[120px] bg-[#F3F4F6]" />
+    <div className="h-[260px] bg-white rounded-2xl border border-[#E5E7EB] overflow-hidden animate-pulse">
+      <div className="h-[140px] bg-[#F3F4F6]" />
       <div className="p-3 flex flex-col gap-2 mt-1">
         <div className="h-3 bg-[#F3F4F6] rounded w-3/4" />
         <div className="h-2.5 bg-[#F3F4F6] rounded w-1/2" />
@@ -451,8 +438,8 @@ function ForYouSection({ savedTags, savedCats, ctx, recordClick }: FeedProps) {
 
   if (loading) {
     return (
-      <div className="flex gap-4 overflow-x-auto pb-2 -mx-6 px-6 scrollbar-hide">
-        {Array.from({ length: 4 }).map((_, i) => <CardSkeleton key={i} />)}
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+        {Array.from({ length: 8 }).map((_, i) => <CardSkeleton key={i} />)}
       </div>
     )
   }
@@ -460,19 +447,15 @@ function ForYouSection({ savedTags, savedCats, ctx, recordClick }: FeedProps) {
   if (scored.length === 0) return null
 
   return (
-    <div
-      className="flex gap-4 overflow-x-auto pb-3 -mx-6 px-6 scrollbar-hide"
-      style={{ scrollSnapType: 'x mandatory', WebkitOverflowScrolling: 'touch' }}
-    >
+    <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
       {scored.map(({ item, reason }, idx) => (
-        <div key={item.id} style={{ scrollSnapAlign: 'start' }}>
-          <ForYouCard
-            item={item}
-            reason={reason}
-            showBadge={idx < 3}
-            onClick={recordClick}
-          />
-        </div>
+        <ForYouCard
+          key={item.id}
+          item={item}
+          reason={reason}
+          showBadge={idx < 3}
+          onClick={recordClick}
+        />
       ))}
     </div>
   )
@@ -572,19 +555,15 @@ function IntentResults({ scored, onClear, recordClick }: IntentResultsProps) {
 
   return (
     <>
-      <div
-        className="flex gap-4 overflow-x-auto pb-3 -mx-6 px-6 scrollbar-hide"
-        style={{ scrollSnapType: 'x mandatory', WebkitOverflowScrolling: 'touch' }}
-      >
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
         {scored.map(({ item, reason }, idx) => (
-          <div key={item.id} style={{ scrollSnapAlign: 'start' }}>
-            <ForYouCard
-              item={item}
-              reason={reason}
-              showBadge={idx < 3}
-              onClick={recordClick}
-            />
-          </div>
+          <ForYouCard
+            key={item.id}
+            item={item}
+            reason={reason}
+            showBadge={idx < 3}
+            onClick={recordClick}
+          />
         ))}
       </div>
       <div className="mt-2 flex justify-end">

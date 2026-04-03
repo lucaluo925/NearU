@@ -155,7 +155,6 @@ function isFree(tags?: string[] | null): boolean {
   return !!(tags?.some((t) => t === 'free' || t === 'free-for-students'))
 }
 
-// Fixed total height: h-[228px]
 function EventMiniCard({ item }: { item: Item }) {
   const cat      = CATEGORIES.find((c) => c.slug === item.category)
   const gradient = CAT_GRADIENT[item.category] ?? 'from-[#F3F4F6] to-[#E9EAEC]'
@@ -167,17 +166,17 @@ function EventMiniCard({ item }: { item: Item }) {
   return (
     <Link
       href={`/listing/${item.id}`}
-      className="group flex-none w-[200px] sm:w-[220px] h-[228px] bg-white rounded-2xl border border-[#E5E7EB] shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all duration-200 overflow-hidden flex flex-col"
+      className="group h-[260px] bg-white rounded-2xl border border-[#E5E7EB] shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all duration-200 overflow-hidden flex flex-col"
     >
-      {/* Image zone — always 116px */}
-      <div className={cn('relative h-[116px] shrink-0 bg-gradient-to-br', gradient)}>
+      {/* Image — always 140px */}
+      <div className={cn('relative h-[140px] w-full shrink-0 overflow-hidden bg-gradient-to-br', gradient)}>
         {item.flyer_image_url ? (
           <Image
             src={item.flyer_image_url}
             alt={item.title}
             fill
             className="object-cover group-hover:scale-[1.03] transition-transform duration-300"
-            sizes="220px"
+            sizes="(max-width:640px) 50vw, (max-width:1024px) 33vw, 25vw"
           />
         ) : (
           <div className="absolute inset-0 flex items-center justify-center">
@@ -199,27 +198,24 @@ function EventMiniCard({ item }: { item: Item }) {
           </div>
         )}
       </div>
-
-      {/* Body — strictly structured */}
+      {/* Body */}
       <div className="flex flex-col p-3 flex-1 overflow-hidden">
-        <h3
-          className="text-[13px] font-bold text-[#111111] leading-snug line-clamp-2 group-hover:text-[#333] transition-colors"
-          style={{ minHeight: '2.5em' }}
-        >
+        <h3 className="text-[13px] font-bold text-[#111111] leading-snug line-clamp-2 h-[40px] group-hover:text-[#333] transition-colors">
           {item.title}
         </h3>
-        <div className="flex-1" />
-        <p className="flex items-center gap-1 text-[11px] text-[#9CA3AF] h-[16px] overflow-hidden">
-          {loc && <MapPin className="w-2.5 h-2.5 shrink-0" />}
-          <span className="line-clamp-1">{loc}</span>
-        </p>
-        <div className="flex items-center gap-1 text-[10px] font-medium text-[#6B7280] h-[18px] mt-0.5 overflow-hidden">
-          {time && (
-            <>
-              <Clock className="w-2.5 h-2.5 shrink-0 text-[#9CA3AF]" />
-              <span>{time}</span>
-            </>
-          )}
+        <div className="mt-auto">
+          <p className="flex items-center gap-1 text-[11px] text-[#9CA3AF] overflow-hidden">
+            {loc && <MapPin className="w-2.5 h-2.5 shrink-0" />}
+            <span className="truncate">{loc}</span>
+          </p>
+          <div className="flex items-center gap-1 text-[10px] font-medium text-[#6B7280] mt-0.5">
+            {time && (
+              <>
+                <Clock className="w-2.5 h-2.5 shrink-0 text-[#9CA3AF]" />
+                <span>{time}</span>
+              </>
+            )}
+          </div>
         </div>
       </div>
     </Link>
@@ -253,15 +249,14 @@ function TimeSection({ range, items, totalCount }: { range: TimeRange; items: It
         </div>
         <EventCount count={totalCount} href={range.filterHref} />
       </div>
-      <div className="flex gap-3 overflow-x-auto pb-2 -mx-6 px-6 snap-x snap-mandatory scrollbar-hide">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
         {items.map((item) => (
-          <div key={item.id} className="snap-start">
-            <EventMiniCard item={item} />
-          </div>
+          <EventMiniCard key={item.id} item={item} />
         ))}
+        {/* "See all" tile — matches card height */}
         <Link
           href={range.filterHref}
-          className="flex-none w-[120px] h-[228px] bg-[#F9FAFB] border border-[#E5E7EB] rounded-2xl flex flex-col items-center justify-center gap-2 hover:bg-[#F3F4F6] hover:border-[#D1D5DB] transition-colors snap-start"
+          className="h-[260px] bg-[#F9FAFB] border border-[#E5E7EB] rounded-2xl flex flex-col items-center justify-center gap-2 hover:bg-[#F3F4F6] hover:border-[#D1D5DB] transition-colors"
         >
           <div className="w-9 h-9 rounded-full bg-white border border-[#E5E7EB] flex items-center justify-center">
             <ArrowRight className="w-4 h-4 text-[#374151]" />

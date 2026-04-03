@@ -20,7 +20,7 @@ const CAT_GRADIENT: Record<string, string> = {
   events:   'from-rose-100 to-pink-50',
 }
 
-// ── Mini card for horizontal scroll ──────────────────────────────────────────
+// ── Card ──────────────────────────────────────────────────────────────────────
 
 function DiscoveryCard({ item }: { item: Item }) {
   const cat      = CATEGORIES.find((c) => c.slug === item.category)
@@ -31,16 +31,17 @@ function DiscoveryCard({ item }: { item: Item }) {
   return (
     <Link
       href={`/listing/${item.id}`}
-      className="group flex-none w-[200px] sm:w-[220px] h-[228px] bg-white rounded-2xl border border-[#E5E7EB] shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all duration-200 overflow-hidden flex flex-col"
+      className="group h-[260px] bg-white rounded-2xl border border-[#E5E7EB] shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all duration-200 overflow-hidden flex flex-col"
     >
-      <div className={cn('relative h-[116px] shrink-0 bg-gradient-to-br', gradient)}>
+      {/* Image — always 140px */}
+      <div className={cn('relative h-[140px] w-full shrink-0 overflow-hidden bg-gradient-to-br', gradient)}>
         {item.flyer_image_url ? (
           <Image
             src={item.flyer_image_url}
             alt={item.title}
             fill
             className="object-cover group-hover:scale-[1.03] transition-transform duration-300"
-            sizes="220px"
+            sizes="(max-width:640px) 50vw, (max-width:1024px) 33vw, 25vw"
           />
         ) : (
           <div className="absolute inset-0 flex items-center justify-center">
@@ -53,27 +54,26 @@ function DiscoveryCard({ item }: { item: Item }) {
           </span>
         </div>
       </div>
+      {/* Body */}
       <div className="flex flex-col p-3 flex-1 overflow-hidden">
-        <h3
-          className="text-[13px] font-bold text-[#111111] leading-snug line-clamp-2 group-hover:text-[#333] transition-colors"
-          style={{ minHeight: '2.5em' }}
-        >
+        <h3 className="text-[13px] font-bold text-[#111111] leading-snug line-clamp-2 h-[40px] group-hover:text-[#333] transition-colors">
           {item.title}
         </h3>
-        <div className="flex-1" />
-        <p className="flex items-center gap-1 text-[11px] text-[#9CA3AF] h-[16px] overflow-hidden">
-          {loc && <MapPin className="w-2.5 h-2.5 shrink-0" />}
-          <span className="line-clamp-1">{loc}</span>
-        </p>
-        <div className="flex items-center gap-1 text-[10px] font-medium text-[#6B7280] h-[18px] mt-0.5 overflow-hidden">
-          {time ? (
-            <>
-              <Clock className="w-2.5 h-2.5 shrink-0 text-[#9CA3AF]" />
-              <span>{time}</span>
-            </>
-          ) : (
-            <span className="text-[#C4C9D4] capitalize">{item.category}</span>
-          )}
+        <div className="mt-auto">
+          <p className="flex items-center gap-1 text-[11px] text-[#9CA3AF] overflow-hidden">
+            {loc && <MapPin className="w-2.5 h-2.5 shrink-0" />}
+            <span className="truncate">{loc}</span>
+          </p>
+          <div className="flex items-center gap-1 text-[10px] font-medium text-[#6B7280] mt-0.5">
+            {time ? (
+              <>
+                <Clock className="w-2.5 h-2.5 shrink-0 text-[#9CA3AF]" />
+                <span>{time}</span>
+              </>
+            ) : (
+              <span className="text-[#C4C9D4] capitalize">{item.category}</span>
+            )}
+          </div>
         </div>
       </div>
     </Link>
@@ -172,13 +172,11 @@ export default async function PopularSections() {
           <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-0.5 transition-transform" />
         </Link>
       </div>
-      <div className="flex gap-3 overflow-x-auto pb-2 -mx-6 px-6 snap-x snap-mandatory scrollbar-hide">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
         {trendingItems.map((item) => (
-          <div key={item.id} className="snap-start">
-            <TrendingClickReporter>
-              <DiscoveryCard item={item} />
-            </TrendingClickReporter>
-          </div>
+          <TrendingClickReporter key={item.id}>
+            <DiscoveryCard item={item} />
+          </TrendingClickReporter>
         ))}
       </div>
     </section>
