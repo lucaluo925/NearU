@@ -1,3 +1,9 @@
+// Force dynamic rendering so every request gets a fresh `new Date()`.
+// Without this, Next.js may statically cache the page and EventsTimeline
+// (and EventCountBadge) will compute date ranges from the stale build time,
+// causing "Today" to show past dates.
+export const dynamic = 'force-dynamic'
+
 import { Suspense } from 'react'
 import Link from 'next/link'
 import { ArrowRight, Search, Calendar } from 'lucide-react'
@@ -75,7 +81,7 @@ export default function HomePage() {
       <main className="flex-1 max-w-[1100px] mx-auto w-full px-6 pt-6 pb-8">
 
         {/* ── Hero — dynamic headline, search, pet line ─────────────────────── */}
-        <section className="mb-7 animate-fade-up">
+        <section className="mb-8 animate-fade-up">
           {/* Dynamic headline */}
           <div className="mb-3">
             <h1 className="text-[26px] font-bold tracking-tight text-[#111111] leading-tight">
@@ -149,7 +155,7 @@ export default function HomePage() {
         </Suspense>
 
         {/* ── Browse by Category ─────────────────────────────────────────── */}
-        <section className="mb-12">
+        <section className="mb-10">
           <h2 className="text-[11px] font-semibold text-[#9CA3AF] uppercase tracking-widest mb-5">
             Browse by Category
           </h2>

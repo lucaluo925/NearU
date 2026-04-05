@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServerSupabase } from '@/lib/supabase-server'
-import { haversineDistance, radiusBoundingBox } from '@/lib/utils'
+import { haversineDistance, radiusBoundingBox, endOfLADay } from '@/lib/utils'
 import { isTableMissing } from '@/lib/db-errors'
 
 // ── Rating helpers ────────────────────────────────────────────────────────────
@@ -113,10 +113,12 @@ export async function GET(request: NextRequest) {
   }
 
   if (time === 'today') {
-    const eod = new Date(); eod.setHours(23, 59, 59, 999)
+    // Use LA-timezone midnight so tonight's events (after 5 PM PDT) are included.
+    // The old `setHours(23,59,59)` was UTC midnight = 4:59 PM PDT, cutting off evening events.
+    const eod = endOfLADay(new Date(), 0)
     query = query.gte('start_time', now).lte('start_time', eod.toISOString())
   } else if (time === 'this-week') {
-    const eow = new Date(); eow.setDate(eow.getDate() + 7)
+    const eow = endOfLADay(new Date(), 7)
     query = query.gte('start_time', now).lte('start_time', eow.toISOString())
   }
 

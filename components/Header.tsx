@@ -109,19 +109,40 @@ function AuthButtons() {
 
 export default function Header({ showBack, backHref, backLabel, title, children }: HeaderProps) {
   const pathname = usePathname()
-  const isHome = pathname === '/'
+  const router   = useRouter()
+  const isHome   = pathname === '/'
+
+  /**
+   * Smart back navigation — does NOT push a new history entry.
+   *
+   * Problem with the old `<Link href={backHref}>`: clicking it pushed `/events/concerts`
+   * onto the history stack, so the browser required two presses of ← to return home.
+   *
+   * Fix: use router.back() (which pops the stack, no new entry) when there is
+   * navigable history.  Fall back to router.replace() only when the page was opened
+   * directly (no in-app history to return to).
+   */
+  function handleBack() {
+    if (typeof window !== 'undefined' && window.history.length > 1) {
+      router.back()
+    } else {
+      router.replace(backHref ?? '/')
+    }
+  }
 
   return (
     <header className="sticky top-0 z-50 bg-[#FAFAFA]/90 backdrop-blur-xl border-b border-[#E5E7EB]">
       <div className="max-w-[1100px] mx-auto px-6 h-14 flex items-center justify-between gap-4">
         {/* Left */}
         <div className="flex items-center gap-3 min-w-0 flex-1">
-          {showBack && backHref ? (
-            <Link href={backHref}
-              className="flex items-center gap-1.5 text-[13px] text-[#6B7280] hover:text-[#111111] transition-colors shrink-0">
+          {showBack ? (
+            <button
+              onClick={handleBack}
+              className="flex items-center gap-1.5 text-[13px] text-[#6B7280] hover:text-[#111111] transition-colors shrink-0"
+            >
               <ArrowLeft className="w-4 h-4" />
               <span className="hidden sm:inline font-medium">{backLabel ?? 'Back'}</span>
-            </Link>
+            </button>
           ) : (
             <Link href="/" className="text-[15px] font-bold tracking-tight text-[#111111]">
               NearU

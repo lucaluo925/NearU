@@ -9,24 +9,23 @@ import Image from 'next/image'
 import { Calendar, Clock, MapPin, ArrowRight } from 'lucide-react'
 import { getServerSupabase } from '@/lib/supabase-server'
 import { Item } from '@/lib/types'
-import { formatTime, formatDate } from '@/lib/utils'
+import { formatTime, formatDate, startOfLADay, endOfLADay } from '@/lib/utils'
 import { CATEGORIES } from '@/lib/constants'
 import { cn } from '@/lib/utils'
 
+// startOfLADay / endOfLADay are imported from @/lib/utils (single source of truth)
+
+// ── Local LA timezone helpers (used only in getTimeRanges) ───────────────────
+
 const LA_TZ = 'America/Los_Angeles'
 
-// ── LA timezone helpers ───────────────────────────────────────────────────────
-
-/** ISO date string (YYYY-MM-DD) for today in LA timezone */
-function laToday(now: Date): string {
-  return new Intl.DateTimeFormat('en-CA', { timeZone: LA_TZ }).format(now)
-}
-
-/** Current hour (0–23) in LA timezone */
+/** Current hour (0–23) in LA timezone. Guards against the rare "24" quirk. */
 function laCurrentHour(now: Date): number {
-  return parseInt(
-    new Intl.DateTimeFormat('en-US', { timeZone: LA_TZ, hour: '2-digit', hour12: false }).format(now),
-    10,
+  return (
+    parseInt(
+      new Intl.DateTimeFormat('en-US', { timeZone: LA_TZ, hour: '2-digit', hour12: false }).format(now),
+      10,
+    ) % 24
   )
 }
 
@@ -34,30 +33,6 @@ function laCurrentHour(now: Date): number {
 function laCurrentWeekday(now: Date): number {
   const s = new Intl.DateTimeFormat('en-US', { timeZone: LA_TZ, weekday: 'short' }).format(now)
   return ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(s)
-}
-
-/**
- * Return the UTC Date that corresponds to midnight (00:00:00) in LA on the date
- * that is `offsetDays` ahead of today's LA date.
- *
- * Strategy: probe noon-UTC on the target calendar day to determine the LA
- * UTC-offset (avoiding DST-transition edge cases), then subtract that offset to
- * find what UTC time equals midnight in LA.
- */
-function startOfLADay(now: Date, offsetDays = 0): Date {
-  const [y, m, d] = laToday(now).split('-').map(Number)
-  const noonUTC = new Date(Date.UTC(y, m - 1, d + offsetDays, 12, 0, 0))
-  const laHourAtNoon = parseInt(
-    new Intl.DateTimeFormat('en-US', { timeZone: LA_TZ, hour: '2-digit', hour12: false }).format(noonUTC),
-    10,
-  )
-  // PDT example: noon UTC = 5 AM LA → offset = 7  → midnight LA = 07:00 UTC
-  const utcOffsetH = 12 - laHourAtNoon
-  return new Date(Date.UTC(y, m - 1, d + offsetDays, utcOffsetH, 0, 0, 0))
-}
-
-function endOfLADay(now: Date, offsetDays = 0): Date {
-  return new Date(startOfLADay(now, offsetDays + 1).getTime() - 1)
 }
 
 // ── Time ranges ───────────────────────────────────────────────────────────────
@@ -291,7 +266,7 @@ export default async function EventsTimeline() {
   const totalEvents = allGroups.reduce((s, g) => s + g.items.length, 0)
 
   return (
-    <section className="mb-8">
+    <section className="mb-10">
       <div className="flex items-center justify-between gap-3 mb-4">
         <div className="flex items-center gap-1.5">
           <Calendar className="w-3.5 h-3.5 text-[#C4C9D4]" />

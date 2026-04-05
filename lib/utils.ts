@@ -6,6 +6,46 @@ export function cn(...inputs: ClassValue[]) {
 
 export const DAVIS_TZ = 'America/Los_Angeles'
 
+// ── Shared LA-timezone day boundaries ─────────────────────────────────────────
+// Exported so EventsTimeline (server component) and api/items/route.ts always
+// use identical date-boundary logic — no more UTC vs PDT drift between sections.
+
+/** ISO date string (YYYY-MM-DD) for a Date in LA timezone */
+function laDateStr(d: Date): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: DAVIS_TZ }).format(d)
+}
+
+/**
+ * UTC Date that corresponds to midnight (00:00:00) in LA on the calendar day
+ * `offsetDays` ahead of today's LA date.
+ *
+ * Strategy: probe noon-UTC on the target day to find the exact UTC offset
+ * (handles DST correctly), then compute midnight LA in UTC.
+ */
+export function startOfLADay(now: Date, offsetDays = 0): Date {
+  const [y, m, day] = laDateStr(now).split('-').map(Number)
+  const noonUTC = new Date(Date.UTC(y, m - 1, day + offsetDays, 12, 0, 0))
+  const laHourAtNoon =
+    parseInt(
+      new Intl.DateTimeFormat('en-US', {
+        timeZone: DAVIS_TZ,
+        hour: '2-digit',
+        hour12: false,
+      }).format(noonUTC),
+      10,
+    ) % 24  // guard against the rare "24" midnight quirk in some JS engines
+  const utcOffsetH = 12 - laHourAtNoon
+  return new Date(Date.UTC(y, m - 1, day + offsetDays, utcOffsetH, 0, 0, 0))
+}
+
+/**
+ * UTC Date that corresponds to the last millisecond (23:59:59.999) of the LA
+ * calendar day `offsetDays` ahead of today.
+ */
+export function endOfLADay(now: Date, offsetDays = 0): Date {
+  return new Date(startOfLADay(now, offsetDays + 1).getTime() - 1)
+}
+
 export function formatDate(dateStr: string): string {
   const date = new Date(dateStr)
   return date.toLocaleDateString('en-US', {
@@ -33,7 +73,9 @@ export function formatDateTime(start?: string, end?: string): string {
   const dayFmt = new Intl.DateTimeFormat('en-CA', { timeZone: DAVIS_TZ })
   const startDayLA = dayFmt.format(startDate)
   const todayLA    = dayFmt.format(now)
-  const tomorrowLA = dayFmt.format(new Date(now.getTime() + 86400000))
+  // Use startOfLADay(+1) so "tomorrow" is always the next LA calendar day,
+  // not a naive UTC +24 h that breaks across DST transitions.
+  const tomorrowLA = dayFmt.format(startOfLADay(now, 1))
 
   let dateLabel = ''
   if (startDayLA === todayLA) {
