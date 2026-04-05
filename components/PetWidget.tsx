@@ -2016,11 +2016,6 @@ export default function PetWidget() {
     >
       {/* ── Modal ─────────────────────────────────────────────────────── */}
       {open && (
-        {/* === BUG 1 FIX: flex-col + max-h lets the header stay fixed while
-             the body scrolls. overflow-hidden is kept for rounded-2xl clipping.
-             max-h accounts for the fixed bottom anchor (~80px) so the panel
-             never exceeds the viewport. -webkit-overflow-scrolling is applied
-             on the inner scroll div for iOS momentum scroll. === */}
         <div className="relative w-[260px] max-w-[calc(100vw-2rem)] bg-white border border-[#E5E7EB] rounded-2xl shadow-2xl overflow-hidden pet-card-open flex flex-col max-h-[calc(100dvh-90px)]">
 
           {/* Share-hatch overlay (rare / epic / legendary) */}
