@@ -98,38 +98,70 @@ function FallbackHero({ category, title }: { category: string; title: string }) 
   )
 }
 
+/**
+ * getEventDateParts — single source of truth for all date parts in EventDateBanner.
+ *
+ * Root cause of the "MON 6 APR" / "Monday, Sun, Apr 5" mismatch:
+ *   toLocaleDateString('en-US', { weekday: 'long', timeZone: DAVIS_TZ })
+ * called with a SINGLE field option is unreliable in Node.js (server-side).
+ * Node.js ICU can silently ignore timeZone for single-field calls, falling
+ * back to UTC — so dayName/dayNum came back as UTC Monday Apr 6 while
+ * dateOnly (multi-field call) correctly returned LA Sunday Apr 5.
+ *
+ * Fix: use Intl.DateTimeFormat.formatToParts() — the only reliable API for
+ * extracting individual components with timezone in a Node.js server context.
+ * One formatter, one .format() call, all parts guaranteed consistent.
+ */
+function getEventDateParts(start_time: string) {
+  const d    = new Date(start_time)
+  const dtf  = new Intl.DateTimeFormat('en-US', {
+    timeZone: DAVIS_TZ,
+    weekday:  'long',
+    month:    'short',
+    day:      'numeric',
+  })
+  const byType = Object.fromEntries(
+    dtf.formatToParts(d).map(p => [p.type, p.value])
+  ) as Record<string, string>
+  // byType: { weekday: 'Sunday', month: 'Apr', day: '5', literal: ', ', ... }
+
+  return {
+    weekdayShort: byType.weekday.slice(0, 3).toUpperCase(), // 'SUN'
+    weekdayLong:  byType.weekday,                           // 'Sunday'
+    day:          byType.day,                               // '5'
+    monthShort:   byType.month.toUpperCase(),               // 'APR'
+    // fullLabel used for the main text line — no separate weekday derivation
+    fullLabel:    `${byType.weekday}, ${byType.month} ${byType.day}`, // 'Sunday, Apr 5'
+  }
+}
+
 /** Prominent event date/time banner — shown above the fold for events */
 function EventDateBanner({ start_time, end_time }: { start_time: string; end_time?: string }) {
-  // Derive ALL date parts from the SAME Date object using LA timezone.
-  // The previous code mixed timezone-naive calls (.getDate(), no-timeZone
-  // toLocaleDateString) with LA-aware formatDate(), causing weekday/date
-  // mismatches like "Monday, Sun, Apr 5".
-  const d = new Date(start_time)
-  const dayName   = d.toLocaleDateString('en-US', { weekday: 'long',    timeZone: DAVIS_TZ }) // "Sunday"
-  const dayNum    = d.toLocaleDateString('en-US', { day:     'numeric', timeZone: DAVIS_TZ }) // "5"
-  const monthAbbr = d.toLocaleDateString('en-US', { month:   'short',   timeZone: DAVIS_TZ }).toUpperCase() // "APR"
-  // Month + day only (no weekday) so the heading reads "Sunday, Apr 5" not "Sunday, Sun, Apr 5"
-  const dateOnly  = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: DAVIS_TZ }) // "Apr 5"
-  const start     = formatTime(start_time)
-  const end       = end_time ? formatTime(end_time) : null
+  // All date display derived from one call to getEventDateParts — badge and
+  // text are guaranteed to show the same calendar day in America/Los_Angeles.
+  const parts     = getEventDateParts(start_time)
+  const startTime = formatTime(start_time)
+  const endTime   = end_time ? formatTime(end_time) : null
 
   return (
     <div className="flex items-center gap-4 bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-100 rounded-2xl px-5 py-4 mb-5 animate-fade-up animate-fade-up-delay-1">
+      {/* Left badge — weekdayShort / day / monthShort all from the same parts object */}
       <div className="w-12 h-12 rounded-xl bg-white border border-blue-100 flex flex-col items-center justify-center shrink-0 shadow-sm">
         <span className="text-[9px] font-bold text-blue-500 uppercase tracking-wider leading-none">
-          {dayName.slice(0, 3).toUpperCase()}
+          {parts.weekdayShort}
         </span>
         <span className="text-[20px] font-black text-[#111111] leading-tight">
-          {dayNum}
+          {parts.day}
         </span>
         <span className="text-[9px] font-medium text-[#6B7280] leading-none">
-          {monthAbbr}
+          {parts.monthShort}
         </span>
       </div>
+      {/* Main text — fullLabel built from the same byType parts */}
       <div className="flex-1 min-w-0">
-        <p className="text-[15px] font-bold text-[#111111]">{dayName}, {dateOnly}</p>
+        <p className="text-[15px] font-bold text-[#111111]">{parts.fullLabel}</p>
         <p className="text-[14px] text-[#6B7280] mt-0.5">
-          {start}{end ? ` – ${end}` : ''}
+          {startTime}{endTime ? ` – ${endTime}` : ''}
         </p>
       </div>
       <Calendar className="w-5 h-5 text-blue-300 shrink-0" />
