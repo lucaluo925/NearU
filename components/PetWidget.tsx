@@ -1966,12 +1966,29 @@ export default function PetWidget() {
 
   // Use API data if available, fallback to defaults on API error / slow load.
   // isLoggedOut (401) → guest mode: show widget with limited interaction.
-  const isGuest       = isLoggedOut
-  const effectivePet  = pet ?? DEFAULT_PET
-  const emoji         = PET_EMOJI[effectivePet.pet_type as PetType] ?? '🐾'
-  const mood          = effectivePet.mood as PetMood
+  const isGuest      = isLoggedOut
+  const effectivePet = pet ?? DEFAULT_PET
+
+  // === BUG 2 FIX: safe pet type =============================================
+  // Always validate pet_type against the unlocked list.  If the DB has an
+  // inconsistency (pet_type set to a pet that isn't yet in unlocked_pets —
+  // e.g. a partial write during unlock/hatch), or during the brief window
+  // where refresh() is in-flight with stale data, this guard ensures we
+  // never render a locked pet as the active one.  Falls back to the first
+  // unlocked pet (normally 'dog').
+  const unlockedPets       = effectivePet.unlocked_pets?.length
+    ? effectivePet.unlocked_pets
+    : ['dog']
+  const safePetType        = unlockedPets.includes(effectivePet.pet_type)
+    ? effectivePet.pet_type
+    : unlockedPets[0]
+  // Rewrite effectivePet so every downstream reference uses the safe type
+  const safePet            = { ...effectivePet, pet_type: safePetType }
+  // =========================================================================
+
+  const emoji         = PET_EMOJI[safePet.pet_type as PetType] ?? '🐾'
+  const mood          = safePet.mood as PetMood
   const isCelebrating = reaction === 'celebrate'
-  const unlockedPets  = effectivePet.unlocked_pets ?? ['dog']
   // Derived from API — repeatable whenever user owns eggs
   const eggCount      = pet ? (pet.egg_count ?? 0) : 0
   const needsHatch    = eggCount > 0
@@ -1999,7 +2016,12 @@ export default function PetWidget() {
     >
       {/* ── Modal ─────────────────────────────────────────────────────── */}
       {open && (
-        <div className="relative w-[260px] max-w-[calc(100vw-2rem)] bg-white border border-[#E5E7EB] rounded-2xl shadow-2xl overflow-hidden pet-card-open">
+        {/* === BUG 1 FIX: flex-col + max-h lets the header stay fixed while
+             the body scrolls. overflow-hidden is kept for rounded-2xl clipping.
+             max-h accounts for the fixed bottom anchor (~80px) so the panel
+             never exceeds the viewport. -webkit-overflow-scrolling is applied
+             on the inner scroll div for iOS momentum scroll. === */}
+        <div className="relative w-[260px] max-w-[calc(100vw-2rem)] bg-white border border-[#E5E7EB] rounded-2xl shadow-2xl overflow-hidden pet-card-open flex flex-col max-h-[calc(100dvh-90px)]">
 
           {/* Share-hatch overlay (rare / epic / legendary) */}
           {showShareCard && drawnPet && (
@@ -2024,8 +2046,8 @@ export default function PetWidget() {
             /* Normal modal content */
             <>
 
-          {/* Header */}
-          <div className="flex items-center justify-between px-4 pt-4 pb-2">
+          {/* Header — shrink-0 keeps it pinned while body scrolls */}
+          <div className="flex items-center justify-between px-4 pt-4 pb-2 shrink-0">
             <div className="flex items-center gap-1.5 min-w-0">
               <span className="text-[11px] font-semibold text-[#9CA3AF] uppercase tracking-wider">
                 {isGuest ? 'Your Companion' : (petName ?? 'Your Pet')}
@@ -2044,6 +2066,11 @@ export default function PetWidget() {
               aria-label="Close"
             >×</button>
           </div>
+
+          {/* Scrollable body — flex-1 fills remaining height; overflow-y-auto
+               enables scroll; overscroll-contain prevents page scroll bleed;
+               -webkit-overflow-scrolling:touch gives iOS momentum scroll. */}
+          <div className="overflow-y-auto overscroll-contain flex-1" style={{ WebkitOverflowScrolling: 'touch' } as React.CSSProperties}>
 
           {/* Naming prompt — logged-in only */}
           {!isGuest && namingMode && (
@@ -2107,10 +2134,10 @@ export default function PetWidget() {
               <PetAvatar emoji={emoji} mood={mood} reaction={reaction} size="lg" onTap={handleAvatarTap} />
             </div>
             <div className="flex-1 min-w-0">
-              <p className="text-[15px] font-black text-[#111111] leading-tight">Level {effectivePet.level}</p>
+              <p className="text-[15px] font-black text-[#111111] leading-tight">Level {safePet.level}</p>
               <p className="text-[12px] text-[#6B7280] flex items-center gap-1 mt-0.5">
-                <span>{MOOD_EMOJI[effectivePet.mood]}</span>
-                <span>{MOOD_LABEL[effectivePet.mood]}</span>
+                <span>{MOOD_EMOJI[safePet.mood]}</span>
+                <span>{MOOD_LABEL[safePet.mood]}</span>
               </p>
             </div>
           </div>
@@ -2122,7 +2149,7 @@ export default function PetWidget() {
                 <span className="text-[11px] text-[#9CA3AF]">Bond</span>
                 <span className="text-[12px] font-bold text-rose-400">{bond} ❤️</span>
               </div>
-              <XpBar xp={effectivePet.xp} />
+              <XpBar xp={safePet.xp} />
             </div>
           )}
 
@@ -2161,7 +2188,7 @@ export default function PetWidget() {
               </div>
               <div className="px-4 py-3">
                 <PetChooser
-                  current={effectivePet.pet_type}
+                  current={safePet.pet_type}
                   unlocked={unlockedPets}
                   points={currentPoints}
                   onChoose={choosePet}
@@ -2208,6 +2235,7 @@ export default function PetWidget() {
               </p>
             </div>
           )}
+          </div>{/* end scrollable body */}
             </> /* end normal modal content */
           )}
         </div>
@@ -2233,7 +2261,7 @@ export default function PetWidget() {
             <PetAvatar emoji={emoji} mood={mood} reaction={reaction} size="sm" />
           )}
           <span className="text-[11px] font-bold text-[#374151] leading-none">
-            {needsHatch ? '?' : `Lv.${effectivePet.level}`}
+            {needsHatch ? '?' : `Lv.${safePet.level}`}
           </span>
         </button>
       </div>
