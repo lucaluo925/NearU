@@ -5,7 +5,7 @@ import Image from 'next/image'
 import Link from 'next/link'
 import { ArrowLeft, MapPin, Clock, Map, ExternalLink, UtensilsCrossed, Calendar } from 'lucide-react'
 import { getServerSupabase } from '@/lib/supabase-server'
-import { formatDateTime, formatDate, formatTime, buildGoogleMapsUrl, buildAppleMapsUrl, cleanDescription } from '@/lib/utils'
+import { formatDateTime, formatDate, formatTime, buildGoogleMapsUrl, buildAppleMapsUrl, cleanDescription, DAVIS_TZ } from '@/lib/utils'
 import { getCategoryBySlug, getSubcategoryLabel } from '@/lib/constants'
 import { getTagStyle, tagLabel, classifyTag, knownForFromTags } from '@/lib/tags'
 import { cn } from '@/lib/utils'
@@ -100,26 +100,34 @@ function FallbackHero({ category, title }: { category: string; title: string }) 
 
 /** Prominent event date/time banner — shown above the fold for events */
 function EventDateBanner({ start_time, end_time }: { start_time: string; end_time?: string }) {
-  const date    = formatDate(start_time)
-  const start   = formatTime(start_time)
-  const end     = end_time ? formatTime(end_time) : null
-  const dayName = new Date(start_time).toLocaleDateString('en-US', { weekday: 'long' })
+  // Derive ALL date parts from the SAME Date object using LA timezone.
+  // The previous code mixed timezone-naive calls (.getDate(), no-timeZone
+  // toLocaleDateString) with LA-aware formatDate(), causing weekday/date
+  // mismatches like "Monday, Sun, Apr 5".
+  const d = new Date(start_time)
+  const dayName   = d.toLocaleDateString('en-US', { weekday: 'long',    timeZone: DAVIS_TZ }) // "Sunday"
+  const dayNum    = d.toLocaleDateString('en-US', { day:     'numeric', timeZone: DAVIS_TZ }) // "5"
+  const monthAbbr = d.toLocaleDateString('en-US', { month:   'short',   timeZone: DAVIS_TZ }).toUpperCase() // "APR"
+  // Month + day only (no weekday) so the heading reads "Sunday, Apr 5" not "Sunday, Sun, Apr 5"
+  const dateOnly  = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: DAVIS_TZ }) // "Apr 5"
+  const start     = formatTime(start_time)
+  const end       = end_time ? formatTime(end_time) : null
 
   return (
     <div className="flex items-center gap-4 bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-100 rounded-2xl px-5 py-4 mb-5 animate-fade-up animate-fade-up-delay-1">
       <div className="w-12 h-12 rounded-xl bg-white border border-blue-100 flex flex-col items-center justify-center shrink-0 shadow-sm">
         <span className="text-[9px] font-bold text-blue-500 uppercase tracking-wider leading-none">
-          {dayName.slice(0, 3)}
+          {dayName.slice(0, 3).toUpperCase()}
         </span>
         <span className="text-[20px] font-black text-[#111111] leading-tight">
-          {new Date(start_time).getDate()}
+          {dayNum}
         </span>
         <span className="text-[9px] font-medium text-[#6B7280] leading-none">
-          {new Date(start_time).toLocaleDateString('en-US', { month: 'short' }).toUpperCase()}
+          {monthAbbr}
         </span>
       </div>
       <div className="flex-1 min-w-0">
-        <p className="text-[15px] font-bold text-[#111111]">{dayName}, {date}</p>
+        <p className="text-[15px] font-bold text-[#111111]">{dayName}, {dateOnly}</p>
         <p className="text-[14px] text-[#6B7280] mt-0.5">
           {start}{end ? ` – ${end}` : ''}
         </p>
@@ -306,7 +314,7 @@ export default async function ListingPage({ params }: Props) {
 
   return (
     <div className="min-h-screen flex flex-col bg-[#FAFAFA]">
-      <ViewTracker itemId={item.id} category={item.category} />
+      <ViewTracker itemId={item.id} category={item.category} title={item.title} />
       <Header showBack backHref={backHref} backLabel={subcategoryLabel} />
 
       <main className="flex-1 max-w-[720px] mx-auto w-full px-6 py-10">
