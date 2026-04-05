@@ -139,14 +139,14 @@ function PetAssistantBar({
   onOpenChat:  () => void
 }) {
   return (
-    <div className="flex items-center gap-2 mb-3 px-3 py-2 bg-amber-50 border border-amber-100 rounded-xl">
-      <span className="text-[16px] shrink-0 select-none" aria-hidden>🐶</span>
-      <p className="flex-1 text-[12px] text-[#92400E] font-medium leading-snug min-w-0 truncate">
+    <div className="flex items-start gap-2.5 mb-3 px-3 py-2.5 bg-amber-50 border border-amber-100 rounded-xl">
+      <span className="text-[16px] shrink-0 select-none mt-0.5" aria-hidden>🐾</span>
+      <p className="flex-1 text-[12px] text-[#92400E] font-medium leading-snug min-w-0">
         {message}
       </p>
       <button
         onClick={onOpenChat}
-        className="shrink-0 text-[11px] font-semibold text-amber-700 hover:text-amber-900 transition-colors whitespace-nowrap"
+        className="shrink-0 text-[11px] font-semibold text-amber-700 hover:text-amber-900 transition-colors whitespace-nowrap mt-0.5"
       >
         view chat ›
       </button>
@@ -218,10 +218,10 @@ function PetChatPanel({
         {/* Header */}
         <div className="flex items-center justify-between px-5 pt-5 pb-3 border-b border-[#F3F4F6] shrink-0">
           <div className="flex items-center gap-2">
-            <span className="text-[20px] select-none" aria-hidden>🐶</span>
+            <span className="text-[20px] select-none" aria-hidden>🐾</span>
             <div>
               <p className="text-[14px] font-bold text-[#111111]">Pet Assistant</p>
-              <p className="text-[11px] text-[#9CA3AF]">your recent searches</p>
+              <p className="text-[11px] text-[#9CA3AF]">your companion's memory</p>
             </div>
           </div>
           <button
@@ -238,10 +238,9 @@ function PetChatPanel({
           {messages.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-14 text-center gap-3">
               <span className="text-[44px]" aria-hidden>🐾</span>
-              <p className="text-[13px] font-semibold text-[#374151]">No searches yet</p>
+              <p className="text-[13px] font-semibold text-[#374151]">Nothing yet</p>
               <p className="text-[12px] text-[#9CA3AF] max-w-[240px]">
-                Try asking something like<br />
-                &ldquo;chill spots tonight&rdquo; or &ldquo;free food&rdquo;
+                Save, share, or search something — your companion will remember it here
               </p>
             </div>
           ) : (
@@ -249,7 +248,7 @@ function PetChatPanel({
               <div key={`${msg.ts}-${i}`}>
                 {/* Pet bubble */}
                 <div className="flex items-start gap-2 mb-2">
-                  <span className="text-[14px] shrink-0 mt-0.5 select-none" aria-hidden>🐶</span>
+                  <span className="text-[14px] shrink-0 mt-0.5 select-none" aria-hidden>🐾</span>
                   <div className="flex-1 min-w-0">
                     <div className="inline-block bg-amber-50 border border-amber-100 rounded-2xl rounded-tl-sm px-3 py-2 mb-1 max-w-full">
                       <p className="text-[13px] text-[#92400E] font-medium leading-snug">{msg.text}</p>
@@ -273,7 +272,7 @@ function PetChatPanel({
         {/* Footer hint */}
         <div className="px-5 py-3 border-t border-[#F3F4F6] bg-[#FAFAFA] shrink-0">
           <p className="text-[11px] text-[#C4C9D4] text-center">
-            Use the search bar to ask me anything
+            Try: &ldquo;chill tonight&rdquo; · &ldquo;free food near campus&rdquo;
           </p>
         </div>
       </div>
@@ -355,7 +354,7 @@ function ForYouCard({ item, reason, showBadge, onClick }: CardProps) {
         {showBadge && (
           <div className="absolute top-2 left-2">
             <span className="text-[9px] font-medium text-amber-700 bg-white/90 border border-amber-200 rounded-full px-1.5 py-0.5 uppercase tracking-wide">
-              🔥 For You
+              🐾 For You
             </span>
           </div>
         )}
@@ -366,9 +365,10 @@ function ForYouCard({ item, reason, showBadge, onClick }: CardProps) {
         <h3 className="text-[13px] font-bold text-[#111111] leading-snug line-clamp-2 h-[40px] group-hover:text-[#333] transition-colors">
           {item.title}
         </h3>
-        {reason && (
-          <p className="text-[10px] text-[#9CA3AF] mt-0.5 leading-tight truncate">{reason}</p>
-        )}
+        {/* Fixed-height reason row — always reserves space to keep card body uniform */}
+        <p className="text-[10px] text-[#9CA3AF] mt-0.5 leading-tight truncate h-[14px]">
+          {reason ?? ''}
+        </p>
         <div className="mt-auto">
           <p className="flex items-center gap-1 text-[11px] text-[#9CA3AF] overflow-hidden">
             {loc && <MapPin className="w-2.5 h-2.5 shrink-0" />}
@@ -381,7 +381,7 @@ function ForYouCard({ item, reason, showBadge, onClick }: CardProps) {
                 <span>{time}</span>
               </>
             ) : (
-              <span className="text-[#C4C9D4] capitalize">{item.category}</span>
+              <span className="text-[#9CA3AF] capitalize">{item.category}</span>
             )}
           </div>
         </div>
@@ -592,14 +592,17 @@ export default function HomePersonalization() {
 
   const { profile, recordClick } = useTasteProfile()
 
-  const [showModal, setShowModal]   = useState(false)
-  const [showForYou, setShowForYou] = useState(false)
+  const [showModal, setShowModal] = useState(false)
 
   // ── Persistent assistant bar ──────────────────────────────────────────────
   // Never auto-clears — only changes when user interacts or hydrates.
   const [assistantMsg, setAssistantMsg] = useState('finding picks for you 🐾')
   const [chatOpen, setChatOpen]         = useState(false)
   const [chatHistory, setChatHistory]   = useState<ChatMessage[]>([])
+
+  // Debounce refs: prevent rapid pet:message overwrites; guard hydration vs user messages
+  const msgDebounceRef    = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const lastUserMsgAtRef  = useRef<number>(0)  // timestamp of last user-action message
 
   // ── Intent state ──────────────────────────────────────────────────────────
   const [intentMode, setIntentMode]       = useState(false)
@@ -619,12 +622,36 @@ export default function HomePersonalization() {
     ],
   )
 
-  // On hydration: show section, load chat, set taste-aware assistant message
+  // Bridge: receive pet reaction messages from PetWidget (save/share/calendar on any page)
+  // Debounced 400ms — prevents rapid saves/shares from flickering the bar.
+  // PetWidget already wrote to localStorage; we just sync state here.
+  useEffect(() => {
+    function onPetMessage(e: Event) {
+      const { text } = (e as CustomEvent<{ text: string }>).detail
+      if (!text) return
+      if (msgDebounceRef.current) clearTimeout(msgDebounceRef.current)
+      msgDebounceRef.current = setTimeout(() => {
+        setAssistantMsg(text)
+        setChatHistory(loadChat())
+        lastUserMsgAtRef.current = Date.now()
+      }, 400)
+    }
+    window.addEventListener('pet:message', onPetMessage)
+    return () => {
+      window.removeEventListener('pet:message', onPetMessage)
+      if (msgDebounceRef.current) clearTimeout(msgDebounceRef.current)
+    }
+  }, [])
+
+  // On hydration: load chat, set taste-aware assistant message.
+  // Guard: don't overwrite if a user-action message arrived in the last 30s.
   useEffect(() => {
     if (!interestsHydrated) return
     if (shouldShowOnboarding) setShowModal(true)
-    setShowForYou(true)
     setChatHistory(loadChat())
+
+    // If a real action message came through recently, leave it — don't replace with ambient
+    if (Date.now() - lastUserMsgAtRef.current < 30_000) return
 
     const now     = new Date().getHours()
     const summary = tasteSummary(profile)
@@ -712,20 +739,20 @@ export default function HomePersonalization() {
   return (
     <>
       {/* ── For You 🔥 ─────────────────────────────────────────────────────────── */}
-      {showForYou && (
-        <section className="mb-10 animate-fade-up">
+      <section className="mb-10">
 
-          {/* Header row: title + "See all" + "Edit" */}
-          <div className="flex items-center justify-between gap-3 mb-2">
-            <div className="flex items-center gap-3">
-              <h2 className="text-[15px] font-bold text-[#111111] leading-none">For You 🔥</h2>
-              <Link
-                href="/for-you"
-                className="text-[12px] font-medium text-[#9CA3AF] hover:text-[#374151] transition-colors"
-              >
-                See all →
-              </Link>
-            </div>
+        {/* Header row: title + "See all" + "Edit" */}
+        <div className="flex items-center justify-between gap-3 mb-4">
+          <div className="flex items-center gap-3">
+            <h2 className="text-[15px] font-bold text-[#111111] leading-none">For You 🔥</h2>
+            <Link
+              href="/for-you"
+              className="text-[12px] font-medium text-[#9CA3AF] hover:text-[#374151] transition-colors"
+            >
+              See all →
+            </Link>
+          </div>
+          {interestsHydrated && (
             <button
               onClick={() => setShowModal(true)}
               className="flex items-center gap-1.5 text-[12px] text-[#9CA3AF] hover:text-[#6B7280] transition-colors"
@@ -733,58 +760,62 @@ export default function HomePersonalization() {
               <Settings2 className="w-3.5 h-3.5" />
               {hasInterests ? 'Edit' : 'Set up'}
             </button>
+          )}
+        </div>
+
+        {/* Persistent pet assistant bar — never auto-disappears */}
+        <PetAssistantBar
+          message={assistantMsg}
+          onOpenChat={() => setChatOpen(true)}
+        />
+
+        {/* Quick action pills */}
+        <AssistantActions dominantCat={dominantCat} />
+
+        {/* ChatGPT-lite intent input */}
+        <IntentBar
+          intentMode={intentMode}
+          loading={intentLoading}
+          onSubmit={handleIntentSubmit}
+          onClear={handleIntentClear}
+        />
+
+        {/* Feed: skeleton while hydrating, intent results or For You cards after */}
+        {!interestsHydrated ? (
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+            {Array.from({ length: 8 }).map((_, i) => <CardSkeleton key={i} />)}
           </div>
-
-          {/* Persistent pet assistant bar — never auto-disappears */}
-          <PetAssistantBar
-            message={assistantMsg}
-            onOpenChat={() => setChatOpen(true)}
-          />
-
-          {/* Quick action pills */}
-          <AssistantActions dominantCat={dominantCat} />
-
-          {/* ChatGPT-lite intent input */}
-          <IntentBar
-            intentMode={intentMode}
-            loading={intentLoading}
-            onSubmit={handleIntentSubmit}
+        ) : intentMode ? (
+          <IntentResults
+            scored={intentScored}
             onClear={handleIntentClear}
+            recordClick={recordClick}
           />
+        ) : (
+          <ForYouSection
+            savedTags={allTags}
+            savedCats={interests.categories}
+            ctx={ctx}
+            recordClick={recordClick}
+          />
+        )}
 
-          {/* Feed: intent results replace the default For You cards */}
-          {intentMode ? (
-            <IntentResults
-              scored={intentScored}
-              onClear={handleIntentClear}
-              recordClick={recordClick}
-            />
-          ) : (
-            <ForYouSection
-              savedTags={allTags}
-              savedCats={interests.categories}
-              ctx={ctx}
-              recordClick={recordClick}
-            />
-          )}
-
-          {/* Subtle personalise nudge — only if no interests set */}
-          {!hasInterests && !showModal && (
-            <div className="flex items-center justify-between mt-3 px-1">
-              <p className="text-[11px] text-[#C4C9D4]">
-                We&apos;ll learn what you like as you browse 🐾
-              </p>
-              <button
-                onClick={() => setShowModal(true)}
-                className="flex items-center gap-1 text-[11px] font-semibold text-[#D97706] hover:text-[#B45309] transition-colors shrink-0"
-              >
-                <Sparkles className="w-3 h-3" />
-                Personalise
-              </button>
-            </div>
-          )}
-        </section>
-      )}
+        {/* Subtle personalise nudge — only if no interests set */}
+        {interestsHydrated && !hasInterests && !showModal && (
+          <div className="flex items-center justify-between mt-3 px-1">
+            <p className="text-[11px] text-[#C4C9D4]">
+              We&apos;ll learn what you like as you browse 🐾
+            </p>
+            <button
+              onClick={() => setShowModal(true)}
+              className="flex items-center gap-1 text-[11px] font-semibold text-[#D97706] hover:text-[#B45309] transition-colors shrink-0"
+            >
+              <Sparkles className="w-3 h-3" />
+              Personalise
+            </button>
+          </div>
+        )}
+      </section>
 
       {/* ── Interests onboarding modal ────────────────────────────────────────── */}
       {showModal && (
@@ -792,7 +823,6 @@ export default function HomePersonalization() {
           onClose={() => {
             setShowModal(false)
             dismiss()
-            setShowForYou(true)
           }}
         />
       )}
