@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServerSupabase } from '@/lib/supabase-server'
 import { getAdminUser } from '@/lib/admin-auth'
+import { isTableMissing } from '@/lib/db-errors'
 
 export interface AdminUser {
   id: string
@@ -42,12 +43,16 @@ export async function GET(request: NextRequest) {
     }
 
     // ── 2. Profiles table — supplementary data (display_name, role, last_seen) ─
+    // profiles may not exist in all deployments; isTableMissing() covers all
+    // three Supabase/PostgREST signals: error code 42P01, "schema cache", and
+    // "does not exist" in the message.  Any of these is silently ignored —
+    // the route continues with an empty profileMap and returns auth users only.
     const { data: profileRows, error: profileError } = await supabase
       .from('profiles')
       .select('id, email, display_name, role, last_seen_at, created_at')
 
-    if (profileError && profileError.code !== '42P01') {
-      // Real error (not just "table doesn't exist") — log but continue
+    if (profileError && !isTableMissing(profileError)) {
+      // Unexpected error (not a missing-table signal) — log but continue
       console.warn('[admin/users] profiles query failed:', profileError.message)
     }
 
@@ -88,8 +93,8 @@ export async function GET(request: NextRequest) {
           submission_count: countByUser[u.id] ?? 0,
         }
       }).sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
-    } else {
-      // Fallback: profiles table only
+    } else if ((profileRows ?? []).length > 0) {
+      // Fallback: profiles table is available even without service-role key
       users = (profileRows ?? []).map((p) => ({
         id:               p.id as string,
         email:            (p.email as string | null) ?? null,
@@ -98,6 +103,20 @@ export async function GET(request: NextRequest) {
         created_at:       p.created_at as string,
         last_seen_at:     (p.last_seen_at as string | null) ?? null,
         submission_count: countByUser[p.id as string] ?? 0,
+      }))
+    } else {
+      // Last resort: derive unique user IDs from submitted items.
+      // No email/display_name available, but the admin page still renders
+      // instead of showing an empty table.
+      const knownIds = Object.keys(countByUser)
+      users = knownIds.map((uid) => ({
+        id:               uid,
+        email:            null,
+        display_name:     null,
+        role:             'user',
+        created_at:       '',
+        last_seen_at:     null,
+        submission_count: countByUser[uid] ?? 0,
       }))
     }
 
