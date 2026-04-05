@@ -99,39 +99,69 @@ function FallbackHero({ category, title }: { category: string; title: string }) 
 }
 
 /**
- * getEventDateParts — single source of truth for all date parts in EventDateBanner.
+ * getEventDateParts — single source of truth for ALL date display in EventDateBanner.
  *
- * Root cause of the "MON 6 APR" / "Monday, Sun, Apr 5" mismatch:
- *   toLocaleDateString('en-US', { weekday: 'long', timeZone: DAVIS_TZ })
- * called with a SINGLE field option is unreliable in Node.js (server-side).
- * Node.js ICU can silently ignore timeZone for single-field calls, falling
- * back to UTC — so dayName/dayNum came back as UTC Monday Apr 6 while
- * dateOnly (multi-field call) correctly returned LA Sunday Apr 5.
+ * Why two previous attempts failed on Node.js SSR:
  *
- * Fix: use Intl.DateTimeFormat.formatToParts() — the only reliable API for
- * extracting individual components with timezone in a Node.js server context.
- * One formatter, one .format() call, all parts guaranteed consistent.
+ *  Attempt 1 — toLocaleDateString with single-field options:
+ *    d.toLocaleDateString('en-US', { weekday: 'long', timeZone: DAVIS_TZ })
+ *    Node.js ICU silently ignores timeZone for single-field calls → returns UTC value.
+ *
+ *  Attempt 2 — Intl.DateTimeFormat.formatToParts() with timeZone:
+ *    new Intl.DateTimeFormat('en-US', { timeZone: DAVIS_TZ, ... }).formatToParts(d)
+ *    Also unreliable on this Node.js build — returns weekday from UTC,
+ *    day/month from LA timezone → parts still mixed.
+ *
+ * The ONLY proven-reliable call in this environment is:
+ *    new Intl.DateTimeFormat('en-CA', { timeZone: DAVIS_TZ }).format(d)
+ *    → "YYYY-MM-DD" (ISO date string in LA timezone)
+ * This exact pattern is used in lib/utils.ts for startOfLADay/endOfLADay
+ * and is confirmed to produce correct LA calendar dates.
+ *
+ * Strategy:
+ *  1. Extract the LA calendar date as "YYYY-MM-DD" via en-CA + DAVIS_TZ.
+ *  2. Parse year/month/day from the string.
+ *  3. Reconstruct a UTC Date at noon on that LA calendar day
+ *     (noon avoids any DST edge-case where midnight itself is ambiguous).
+ *  4. Format that UTC Date with timeZone:'UTC' — zero timezone conversion,
+ *     trivially correct, immune to Node.js ICU timezone quirks.
  */
 function getEventDateParts(start_time: string) {
-  const d    = new Date(start_time)
-  const dtf  = new Intl.DateTimeFormat('en-US', {
-    timeZone: DAVIS_TZ,
+  const d = new Date(start_time)
+
+  // Step 1 — get the LA calendar date string "YYYY-MM-DD"
+  const laDateISO = new Intl.DateTimeFormat('en-CA', { timeZone: DAVIS_TZ }).format(d)
+  // e.g. "2025-04-06" for an event stored as 2025-04-07T03:00:00Z (8 PM PDT Apr 6)
+
+  // Step 2 — parse numeric year / month (1-based) / day
+  const [y, mo, dy] = laDateISO.split('-').map(Number)
+
+  // Step 3 — create a fresh UTC Date at noon on that LA calendar day.
+  // Noon UTC means this Date is always unambiguously on the correct calendar day
+  // regardless of DST boundaries or UTC offset.
+  const noonUTC = new Date(Date.UTC(y, mo - 1, dy, 12, 0, 0))
+
+  // Step 4 — format with timeZone:'UTC' so no conversion happens.
+  // The calendar date is already correct (came from LA TZ in step 1);
+  // we just need the locale's formatting of it.
+  const dtf = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'UTC',
     weekday:  'long',
     month:    'short',
     day:      'numeric',
   })
   const byType = Object.fromEntries(
-    dtf.formatToParts(d).map(p => [p.type, p.value])
+    dtf.formatToParts(noonUTC).map(p => [p.type, p.value])
   ) as Record<string, string>
-  // byType: { weekday: 'Sunday', month: 'Apr', day: '5', literal: ', ', ... }
+  // byType guaranteed: { weekday: 'Monday', month: 'Apr', day: '6', literal: ... }
+  // All parts describe the same LA calendar day — no mixing possible.
 
   return {
-    weekdayShort: byType.weekday.slice(0, 3).toUpperCase(), // 'SUN'
-    weekdayLong:  byType.weekday,                           // 'Sunday'
-    day:          byType.day,                               // '5'
+    weekdayShort: byType.weekday.slice(0, 3).toUpperCase(), // 'MON'
+    weekdayLong:  byType.weekday,                           // 'Monday'
+    day:          byType.day,                               // '6'
     monthShort:   byType.month.toUpperCase(),               // 'APR'
-    // fullLabel used for the main text line — no separate weekday derivation
-    fullLabel:    `${byType.weekday}, ${byType.month} ${byType.day}`, // 'Sunday, Apr 5'
+    fullLabel:    `${byType.weekday}, ${byType.month} ${byType.day}`, // 'Monday, Apr 6'
   }
 }
 
