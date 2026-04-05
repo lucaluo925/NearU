@@ -1499,25 +1499,8 @@ export default function PetWidget() {
     return () => { window.removeEventListener('scroll', onScroll); cancelAnimationFrame(raf) }
   }, [mounted])
 
-  // ── Pull-back scroll trigger — fires once per session after deep scroll ──────
-  // When the user scrolls > 1200 px without interacting, the pet gently prompts
-  // them to narrow things down.  One-shot per session via sessionStorage guard.
-
-  useEffect(() => {
-    if (!mounted) return
-    let fired = false
-    function onScroll() {
-      if (fired || window.scrollY < 1200) return
-      try { if (sessionStorage.getItem('nearu-pet-pullback')) return } catch {}
-      fired = true
-      try { sessionStorage.setItem('nearu-pet-pullback', '1') } catch {}
-      setTimeout(() => sayForce("want me to narrow this down for you? 🐾"), 700)
-    }
-    window.addEventListener('scroll', onScroll, { passive: true })
-    return () => window.removeEventListener('scroll', onScroll)
-  }, [mounted, sayForce])
-
   // ── Message helpers ───────────────────────────────────────────────────────
+  // Declared before any effect that references them.
 
   const dismissMsg = useCallback(() => {
     if (fadeTimer.current) clearTimeout(fadeTimer.current)
@@ -1539,6 +1522,24 @@ export default function PetWidget() {
   const sayForce = useCallback((msg: string) => {
     lastMsgAt.current = 0; say(msg)
   }, [say])
+
+  // ── Pull-back scroll trigger — fires once per session after deep scroll ──────
+  // When the user scrolls > 1200 px without interacting, the pet gently prompts
+  // them to narrow things down.  One-shot per session via sessionStorage guard.
+
+  useEffect(() => {
+    if (!mounted) return
+    let fired = false
+    function onScroll() {
+      if (fired || window.scrollY < 1200) return
+      try { if (sessionStorage.getItem('nearu-pet-pullback')) return } catch {}
+      fired = true
+      try { sessionStorage.setItem('nearu-pet-pullback', '1') } catch {}
+      setTimeout(() => sayForce("want me to narrow this down for you? 🐾"), 700)
+    }
+    window.addEventListener('scroll', onScroll, { passive: true })
+    return () => window.removeEventListener('scroll', onScroll)
+  }, [mounted, sayForce])
 
   const sayTap = useCallback((msg: string) => {
     const now = Date.now()
