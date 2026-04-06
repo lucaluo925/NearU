@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -20,9 +20,10 @@ function emptyStore(): FavoritesStore {
   return { collections, itemCollections: {} }
 }
 
-const KEY = 'aggie-map-favorites-v2'
-/** Legacy key — flat array */
+const KEY        = 'aggie-map-favorites-v2'
 const LEGACY_KEY = 'aggie-map-favorites'
+
+// ── localStorage helpers ──────────────────────────────────────────────────────
 
 /**
  * Validate and sanitize a loaded store object.
@@ -30,62 +31,46 @@ const LEGACY_KEY = 'aggie-map-favorites'
  */
 function sanitizeStore(raw: unknown): FavoritesStore {
   const base = emptyStore()
-
   if (!raw || typeof raw !== 'object') return base
-
   const obj = raw as Record<string, unknown>
 
-  // Sanitize collections: must be Record<string, string[]>
   const rawCollections = obj.collections
   if (rawCollections && typeof rawCollections === 'object' && !Array.isArray(rawCollections)) {
     const cols = rawCollections as Record<string, unknown>
     for (const key of Object.keys(cols)) {
       const val = cols[key]
-      // Each collection value must be an array of strings
       if (Array.isArray(val)) {
         base.collections[key] = val.filter((v): v is string => typeof v === 'string')
       } else {
-        // Corrupt entry — reset to empty
         base.collections[key] = []
       }
     }
-    // Ensure default collections always exist
     for (const c of DEFAULT_COLLECTIONS) {
       if (!base.collections[c]) base.collections[c] = []
     }
   }
 
-  // Sanitize itemCollections: must be Record<string, string>
   const rawItemCollections = obj.itemCollections
   if (rawItemCollections && typeof rawItemCollections === 'object' && !Array.isArray(rawItemCollections)) {
     const items = rawItemCollections as Record<string, unknown>
     for (const key of Object.keys(items)) {
       const val = items[key]
-      if (typeof val === 'string') {
-        base.itemCollections[key] = val
-      }
-      // Invalid entries are dropped
+      if (typeof val === 'string') base.itemCollections[key] = val
     }
   }
 
-  // Integrity check: ensure itemCollections only reference existing collections
+  // Integrity: itemCollections must only reference existing collections
   for (const [itemId, colName] of Object.entries(base.itemCollections)) {
-    if (!base.collections[colName]) {
-      // Collection was removed but itemCollections still references it — repair
-      delete base.itemCollections[itemId]
-    }
+    if (!base.collections[colName]) delete base.itemCollections[itemId]
   }
 
   return base
 }
 
-function loadStore(): FavoritesStore {
+function lsLoad(): FavoritesStore {
   try {
     const raw = localStorage.getItem(KEY)
-    if (raw) {
-      const parsed = JSON.parse(raw)
-      return sanitizeStore(parsed)
-    }
+    if (raw) return sanitizeStore(JSON.parse(raw))
 
     // Migrate from legacy flat array
     const legacy = localStorage.getItem(LEGACY_KEY)
@@ -101,66 +86,130 @@ function loadStore(): FavoritesStore {
       localStorage.removeItem(LEGACY_KEY)
       return store
     }
-  } catch {
-    // Corrupt localStorage — start fresh
-  }
+  } catch {}
   return emptyStore()
 }
 
-function saveStore(store: FavoritesStore) {
-  try {
-    localStorage.setItem(KEY, JSON.stringify(store))
-  } catch {}
+function lsSave(store: FavoritesStore) {
+  try { localStorage.setItem(KEY, JSON.stringify(store)) } catch {}
+}
+
+// ── Server API helpers (fire-and-forget unless noted) ─────────────────────────
+
+function apiAdd(itemId: string, collectionName: string) {
+  fetch('/api/user/favorites', {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ action: 'add', item_id: itemId, collection_name: collectionName }),
+  }).catch(() => {})
+}
+
+function apiRemove(itemId: string) {
+  fetch('/api/user/favorites', {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ action: 'remove', item_id: itemId }),
+  }).catch(() => {})
+}
+
+function apiAddCollection(name: string) {
+  fetch('/api/user/favorites', {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ action: 'add_collection', name }),
+  }).catch(() => {})
+}
+
+function apiRemoveCollection(name: string) {
+  fetch('/api/user/favorites', {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ action: 'remove_collection', name }),
+  }).catch(() => {})
 }
 
 // ── Hook ──────────────────────────────────────────────────────────────────────
 
 export function useFavorites() {
-  const [store, setStore] = useState<FavoritesStore>(emptyStore)
+  const [store,    setStore]    = useState<FavoritesStore>(emptyStore)
   const [hydrated, setHydrated] = useState(false)
 
+  /**
+   * loggedIn ref — set once the server auth check resolves.
+   * null = unknown (pending), true = authenticated, false = guest.
+   */
+  const loggedIn = useRef<boolean | null>(null)
+
+  // ── Mount: load localStorage then sync from server ──────────────────────────
   useEffect(() => {
-    setStore(loadStore())
+    // 1. Instant hydration from localStorage
+    const ls = lsLoad()
+    setStore(ls)
     setHydrated(true)
+
+    // 2. Try to pull from Supabase
+    fetch('/api/user/favorites')
+      .then(async (r) => {
+        if (r.status === 401) {
+          loggedIn.current = false
+          return
+        }
+        loggedIn.current = true
+
+        if (r.status === 404 || !r.ok) {
+          // Table not ready or no server row yet.
+          // Push local favorites up so the server catches up.
+          const localItems = Object.entries(ls.itemCollections)
+          if (localItems.length > 0) {
+            // Upsert each saved item (sequential to avoid rate-limiting)
+            for (const [itemId, colName] of localItems) {
+              apiAdd(itemId, colName)
+            }
+          }
+          return
+        }
+
+        const data = await r.json() as FavoritesStore | null
+        if (!data) return
+
+        // Server data is source of truth — replace local state and update cache
+        setStore(data)
+        lsSave(data)
+      })
+      .catch(() => {
+        loggedIn.current = false
+      })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  /**
-   * Stable flat list of all saved item IDs.
-   * Memoized so the reference only changes when collections actually change.
-   * This prevents useEffect dependency loops in consumers.
-   */
+  // ── Derived ─────────────────────────────────────────────────────────────────
+
   const favorites = useMemo(
     () => Object.values(store.collections).flat(),
     [store.collections],
   )
 
-  /** True when the item is in any collection */
   const isFavorite = useCallback(
     (id: string) => id in store.itemCollections,
     [store.itemCollections],
   )
 
-  /** Which collection an item belongs to (first one) */
   const getCollection = useCallback(
     (id: string) => store.itemCollections[id] ?? null,
     [store.itemCollections],
   )
 
-  /**
-   * Toggle an item in a collection.
-   * If the item is already in that collection, remove it.
-   * If the item is in a different collection, move it.
-   * If not in any collection, add it.
-   */
+  // ── toggle ──────────────────────────────────────────────────────────────────
+
   const toggle = useCallback(
     (id: string, collection: string = DEFAULT_COLLECTIONS[0]) => {
       let isNewSave = false
+
       setStore((prev) => {
         const next: FavoritesStore = {
           collections:     { ...prev.collections },
           itemCollections: { ...prev.itemCollections },
         }
-        // Ensure target collection exists
         if (!next.collections[collection]) next.collections[collection] = []
 
         const currentCollection = prev.itemCollections[id]
@@ -172,33 +221,39 @@ export function useFavorites() {
           )
           delete next.itemCollections[id]
 
-          // If moving to a different collection, re-add
           if (currentCollection !== collection) {
+            // Move to target collection
             next.collections[collection] = [...(next.collections[collection] ?? []), id]
-            next.itemCollections[id] = collection
+            next.itemCollections[id]     = collection
+            if (loggedIn.current) apiAdd(id, collection)
+          } else {
+            // Removed from same collection
+            if (loggedIn.current) apiRemove(id)
           }
         } else {
-          // New save — track so we can award points below
+          // New save
           isNewSave = true
           next.collections[collection] = [...(next.collections[collection] ?? []), id]
-          next.itemCollections[id] = collection
+          next.itemCollections[id]     = collection
+          if (loggedIn.current) apiAdd(id, collection)
         }
 
-        saveStore(next)
+        lsSave(next)
         return next
       })
 
       // Fire-and-forget: points + pet XP for new saves (logged-in users only)
       if (isNewSave) {
         fetch('/api/points/award', {
-          method: 'POST',
+          method:  'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ type: 'save_item', metadata: { item_id: id } }),
+          body:    JSON.stringify({ type: 'save_item', metadata: { item_id: id } }),
         }).catch(() => {})
+
         fetch('/api/pet/xp', {
-          method: 'POST',
+          method:  'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'save_item' }),
+          body:    JSON.stringify({ action: 'save_item' }),
         })
           .then((r) => r.json())
           .then((d: { level_up?: boolean }) => {
@@ -224,7 +279,8 @@ export function useFavorites() {
     [],
   )
 
-  /** Move an item to a different collection */
+  // ── moveToCollection ────────────────────────────────────────────────────────
+
   const moveToCollection = useCallback(
     (id: string, targetCollection: string) => {
       setStore((prev) => {
@@ -239,16 +295,18 @@ export function useFavorites() {
           next.collections[current] = (next.collections[current] ?? []).filter((i) => i !== id)
         }
         next.collections[targetCollection] = [...(next.collections[targetCollection] ?? []), id]
-        next.itemCollections[id] = targetCollection
+        next.itemCollections[id]           = targetCollection
 
-        saveStore(next)
+        lsSave(next)
+        if (loggedIn.current) apiAdd(id, targetCollection)
         return next
       })
     },
     [],
   )
 
-  /** Add a new empty custom collection */
+  // ── addCollection ───────────────────────────────────────────────────────────
+
   const addCollection = useCallback((name: string) => {
     setStore((prev) => {
       if (prev.collections[name]) return prev
@@ -256,12 +314,14 @@ export function useFavorites() {
         ...prev,
         collections: { ...prev.collections, [name]: [] },
       }
-      saveStore(next)
+      lsSave(next)
+      if (loggedIn.current) apiAddCollection(name)
       return next
     })
   }, [])
 
-  /** Remove a collection and un-save all its items */
+  // ── removeCollection ────────────────────────────────────────────────────────
+
   const removeCollection = useCallback((name: string) => {
     setStore((prev) => {
       const next: FavoritesStore = {
@@ -271,7 +331,8 @@ export function useFavorites() {
       const ids = next.collections[name] ?? []
       for (const id of ids) delete next.itemCollections[id]
       delete next.collections[name]
-      saveStore(next)
+      lsSave(next)
+      if (loggedIn.current) apiRemoveCollection(name)
       return next
     })
   }, [])
