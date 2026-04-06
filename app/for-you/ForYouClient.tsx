@@ -8,7 +8,7 @@
  *   - same grid layout (grid-cols-2 md:grid-cols-3 lg:grid-cols-4, gap-4)
  *   - persistent pet assistant bar (loads last localStorage message)
  *   - same intent input bar as homepage
- *   - pet chat history modal
+ *   - pet chat history modal (role-aware: user + assistant bubbles)
  *   - infinite scroll via IntersectionObserver
  *   - quick filter chips
  *   - fetches 40 items
@@ -42,10 +42,10 @@ const InterestsOnboarding = dynamic(
   { ssr: false },
 )
 
-// ── Chat memory (mirrors HomePersonalization) ─────────────────────────────────
+// ── Chat memory ───────────────────────────────────────────────────────────────
 
 const CHAT_KEY = 'nearu-pet-chat'
-const CHAT_MAX = 20
+const CHAT_MAX = 40   // increased to hold user + assistant messages
 
 interface ChatItem {
   id:               string
@@ -54,10 +54,17 @@ interface ChatItem {
   flyer_image_url?: string | null
 }
 
+/**
+ * role is optional for backward-compat with messages stored before this update.
+ * Treat missing role as 'assistant'.
+ * source documents why the message exists (aids context preservation).
+ */
 interface ChatMessage {
-  text:  string
-  items: ChatItem[]
-  ts:    number
+  role?:   'user' | 'assistant' | 'system'
+  text:    string
+  items:   ChatItem[]
+  ts:      number
+  source?: 'intent' | 'ambient' | 'recommendation' | 'pet-event'
 }
 
 function loadChat(): ChatMessage[] {
@@ -69,10 +76,38 @@ function loadChat(): ChatMessage[] {
   } catch { return [] }
 }
 
-function appendChat(msg: ChatMessage): void {
+/**
+ * Append one or more messages to chat history.
+ *
+ * Dedup rules (prevent repetitive spam):
+ *  - If an 'assistant' message with the same text AND same item-id fingerprint
+ *    already exists in the last 10 entries within the past 30 minutes, skip it.
+ *  - 'user' messages are always kept (conversation context).
+ */
+function appendChat(msgs: ChatMessage[]): void {
   try {
     const existing = loadChat()
-    const updated  = [msg, ...existing].slice(0, CHAT_MAX)
+    const thirtyMin = 30 * 60_000
+
+    const toAdd = msgs.filter(msg => {
+      // Always keep user messages — they provide conversation context
+      if (!msg.role || msg.role === 'user') return true
+
+      const itemFingerprint = msg.items.map(i => i.id).sort().join(',')
+      const recent = existing.slice(0, 10)
+
+      const isDupe = recent.some(m => {
+        if ((m.role ?? 'assistant') !== 'assistant') return false
+        if (m.text !== msg.text) return false
+        const mFp = m.items.map(i => i.id).sort().join(',')
+        if (mFp !== itemFingerprint) return false
+        return (msg.ts - m.ts) < thirtyMin
+      })
+      return !isDupe
+    })
+
+    if (toAdd.length === 0) return
+    const updated = [...toAdd, ...existing].slice(0, CHAT_MAX)
     localStorage.setItem(CHAT_KEY, JSON.stringify({ messages: updated }))
   } catch {}
 }
@@ -122,7 +157,6 @@ function intentReason(item: Item, intent: ParsedIntent): string | null {
 }
 
 // ── Pet Assistant Bar ─────────────────────────────────────────────────────────
-// Persistent — never auto-disappears. Loads last message from localStorage.
 
 function PetAssistantBar({
   message,
@@ -185,6 +219,16 @@ function PetChatPanel({
   messages: ChatMessage[]
   onClose:  () => void
 }) {
+  const bottomRef = useRef<HTMLDivElement>(null)
+
+  // Display oldest-first so the conversation reads naturally top-to-bottom
+  const displayMessages = [...messages].reverse()
+
+  // Scroll to bottom (latest message) when panel opens
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'instant' })
+  }, [])
+
   const fmtTime = (ts: number) =>
     new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 
@@ -217,38 +261,57 @@ function PetChatPanel({
           </button>
         </div>
 
-        {/* Messages */}
-        <div className="flex-1 overflow-y-auto px-4 py-3 flex flex-col gap-5">
-          {messages.length === 0 ? (
+        {/* Messages — oldest at top, newest at bottom */}
+        <div className="flex-1 overflow-y-auto px-4 py-3 flex flex-col gap-3">
+          {displayMessages.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-14 text-center gap-3">
               <span className="text-[44px]" aria-hidden>🐾</span>
               <p className="text-[13px] font-semibold text-[#374151]">Nothing yet</p>
               <p className="text-[12px] text-[#9CA3AF] max-w-[240px]">
-                Save, share, or search something — your companion will remember it here
+                Try searching below — your companion will remember it here
               </p>
             </div>
           ) : (
-            messages.map((msg, i) => (
-              <div key={`${msg.ts}-${i}`}>
-                <div className="flex items-start gap-2 mb-2">
-                  <span className="text-[14px] shrink-0 mt-0.5 select-none" aria-hidden>🐾</span>
-                  <div className="flex-1 min-w-0">
-                    <div className="inline-block bg-amber-50 border border-amber-100 rounded-2xl rounded-tl-sm px-3 py-2 mb-1 max-w-full">
-                      <p className="text-[13px] text-[#92400E] font-medium leading-snug">{msg.text}</p>
+            displayMessages.map((msg, i) => {
+              const role = msg.role ?? 'assistant'
+
+              if (role === 'user') {
+                return (
+                  <div key={`${msg.ts}-${i}`} className="flex justify-end">
+                    <div className="max-w-[75%]">
+                      <div className="inline-block bg-[#111111] rounded-2xl rounded-br-sm px-3 py-2">
+                        <p className="text-[13px] text-white font-medium leading-snug">{msg.text}</p>
+                      </div>
+                      <p className="text-[10px] text-[#C4C9D4] mt-0.5 text-right">{fmtTime(msg.ts)}</p>
                     </div>
-                    <p className="text-[10px] text-[#C4C9D4] ml-1">{fmtTime(msg.ts)}</p>
                   </div>
+                )
+              }
+
+              return (
+                <div key={`${msg.ts}-${i}`}>
+                  <div className="flex items-start gap-2 mb-1.5">
+                    <span className="text-[14px] shrink-0 mt-0.5 select-none" aria-hidden>🐾</span>
+                    <div className="flex-1 min-w-0">
+                      <div className="inline-block bg-amber-50 border border-amber-100 rounded-2xl rounded-tl-sm px-3 py-2 mb-1 max-w-full">
+                        <p className="text-[13px] text-[#92400E] font-medium leading-snug">{msg.text}</p>
+                      </div>
+                      <p className="text-[10px] text-[#C4C9D4] ml-1">{fmtTime(msg.ts)}</p>
+                    </div>
+                  </div>
+                  {msg.items.length > 0 && (
+                    <div className="ml-6 flex flex-col gap-1.5">
+                      {msg.items.slice(0, 3).map(item => (
+                        <ChatMiniCard key={item.id} item={item} onClose={onClose} />
+                      ))}
+                    </div>
+                  )}
                 </div>
-                {msg.items.length > 0 && (
-                  <div className="ml-6 flex flex-col gap-1.5">
-                    {msg.items.slice(0, 3).map(item => (
-                      <ChatMiniCard key={item.id} item={item} onClose={onClose} />
-                    ))}
-                  </div>
-                )}
-              </div>
-            ))
+              )
+            })
           )}
+          {/* Scroll anchor — brings latest message into view on open */}
+          <div ref={bottomRef} />
         </div>
 
         {/* Footer hint */}
@@ -262,23 +325,33 @@ function PetChatPanel({
   )
 }
 
-// ── Intent input bar (mirrors homepage IntentBar) ─────────────────────────────
+// ── Intent input bar ──────────────────────────────────────────────────────────
+//
+// clearSignal: incremented by parent after a successful submit to clear the
+// input value. This decouples clearing from intentMode toggling — the input
+// is NOT cleared when intentMode flips to false (which was the root cause of
+// the input-disappears-on-submit bug).
 
 interface IntentBarProps {
-  intentMode: boolean
-  loading:    boolean
-  onSubmit:   (query: string) => void
-  onClear:    () => void
+  intentMode:  boolean
+  loading:     boolean
+  clearSignal: number
+  onSubmit:    (query: string) => void
+  onClear:     () => void
 }
 
-function IntentBar({ intentMode, loading, onSubmit, onClear }: IntentBarProps) {
+function IntentBar({ intentMode, loading, clearSignal, onSubmit, onClear }: IntentBarProps) {
   const [value, setValue] = useState('')
-  useEffect(() => { if (!intentMode) setValue('') }, [intentMode])
+
+  // Clear input ONLY when parent explicitly signals success (not on intentMode changes)
+  useEffect(() => {
+    if (clearSignal > 0) setValue('')
+  }, [clearSignal])
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     const q = value.trim()
-    if (q) onSubmit(q)
+    if (q && !loading) onSubmit(q)
   }
 
   return (
@@ -474,6 +547,14 @@ export default function ForYouClient() {
   const [intentMode, setIntentMode]       = useState(false)
   const [intentLoading, setIntentLoading] = useState(false)
   const [intentScored, setIntentScored]   = useState<ScoredItem[]>([])
+  // clearSignal: incrementing this tells IntentBar to clear its input value
+  const [clearSignal, setClearSignal]     = useState(0)
+  // Tracks the last query and its result for stable display / fallback
+  const [activeQuery, setActiveQuery]     = useState<string | null>(null)
+
+  // lastSearchTs: timestamp of last user-initiated search.
+  // Used to prevent ambient/pet messages from overwriting real search results.
+  const lastSearchTsRef = useRef(0)
 
   // ── Infinite scroll ───────────────────────────────────────────────────────
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
@@ -496,15 +577,19 @@ export default function ForYouClient() {
   useEffect(() => {
     const history = loadChat()
     setChatHistory(history)
-    // Always show the last real message — never leave bar empty
-    if (history.length > 0) setAssistantMsg(history[0].text)
+    // Restore the last real assistant message from history
+    const lastAssistant = history.find(m => (m.role ?? 'assistant') === 'assistant')
+    if (lastAssistant) setAssistantMsg(lastAssistant.text)
   }, [])
 
-  // Bridge: receive pet reaction messages dispatched from PetWidget on any page
+  // Bridge: receive pet reaction messages dispatched from PetWidget on any page.
+  // GUARD: do not overwrite the bar if a real search happened in the last 5 minutes.
   useEffect(() => {
     function onPetMessage(e: Event) {
       const { text } = (e as CustomEvent<{ text: string }>).detail
       if (!text) return
+      const recentSearch = (Date.now() - lastSearchTsRef.current) < 5 * 60_000
+      if (recentSearch) return   // preserve active search result
       setAssistantMsg(text)
       setChatHistory(loadChat())
     }
@@ -512,11 +597,12 @@ export default function ForYouClient() {
     return () => window.removeEventListener('pet:message', onPetMessage)
   }, [])
 
-  // On hydration: set taste-aware greeting (only if no prior chat message to restore)
+  // On hydration: set taste-aware greeting ONLY if no prior chat message exists
+  // and the user hasn't done a real search yet.
   useEffect(() => {
     if (!interestsHydrated) return
-    // If chat history already gave us a meaningful message, keep it
-    if (loadChat().length > 0) return
+    if (loadChat().find(m => (m.role ?? 'assistant') === 'assistant')) return
+    if (lastSearchTsRef.current > 0) return
 
     const hour    = new Date().getHours()
     const summary = tasteSummary(profile)
@@ -563,9 +649,22 @@ export default function ForYouClient() {
   useEffect(() => { ctxRef.current = ctx }, [ctx])
 
   // ── Intent submit ─────────────────────────────────────────────────────────
+  //
+  // FIX: removed the setIntentMode(false) call at the start of this function.
+  //      Previously, flipping intentMode→false triggered IntentBar's useEffect
+  //      to clear the input immediately, losing the typed query mid-flight.
+  //      Now: intentMode only flips on the success/failure path (at the end),
+  //      and input clearing is decoupled via clearSignal.
+  //
+  // FIX: stores both a 'user' message AND an 'assistant' message in chat history
+  //      so the conversation shows what was asked alongside what was answered.
+  //
+  // FIX: guards ambient overwrite via lastSearchTsRef so greetings / pet events
+  //      cannot overwrite the assistant bar after a real search.
   const handleIntentSubmit = useCallback(async (query: string) => {
     setIntentLoading(true)
-    setIntentMode(false)
+    setActiveQuery(query)
+    lastSearchTsRef.current = Date.now()
 
     try {
       const intent     = parseIntent(query)
@@ -594,26 +693,44 @@ export default function ForYouClient() {
         .sort((a, b) => b.score - a.score)
         .slice(0, 12)
 
-      const msg = buildIntentResponse(intent, scored.length)
-      setAssistantMsg(msg)
+      const now         = Date.now()
+      const responseText = scored.length > 0
+        ? buildIntentResponse(intent, scored.length)
+        : `I couldn't find a great exact match for "${query}" — try these instead 🐾`
 
-      const chatMsg: ChatMessage = {
-        text:  msg,
-        items: scored.slice(0, 3).map(s => ({
+      // Store user query + assistant response as a pair in chat history.
+      // Newest-first storage: [assistantMsg, userMsg, ...older]
+      const userChatMsg: ChatMessage = {
+        role:   'user',
+        text:   query,
+        items:  [],
+        ts:     now - 1,   // 1ms before assistant so ordering is stable
+        source: 'intent',
+      }
+      const assistantChatMsg: ChatMessage = {
+        role:   'assistant',
+        text:   responseText,
+        items:  scored.slice(0, 3).map(s => ({
           id:              s.item.id,
           title:           s.item.title,
           category:        s.item.category,
           flyer_image_url: s.item.flyer_image_url,
         })),
-        ts: Date.now(),
+        ts:     now,
+        source: 'intent',
       }
-      appendChat(chatMsg)
+      appendChat([assistantChatMsg, userChatMsg])
       setChatHistory(loadChat())
 
+      setAssistantMsg(responseText)
       setIntentScored(scored)
       setIntentMode(true)
+      // Signal IntentBar to clear its input — happens AFTER results are stable
+      setClearSignal(s => s + 1)
     } catch {
-      // silent
+      // On error: keep the input value (don't clear it), show a stable fallback
+      setAssistantMsg(`Hmm, something went wrong — try again 🐾`)
+      setIntentMode(false)
     } finally {
       setIntentLoading(false)
     }
@@ -622,6 +739,7 @@ export default function ForYouClient() {
   const handleIntentClear = useCallback(() => {
     setIntentMode(false)
     setIntentScored([])
+    setActiveQuery(null)
   }, [])
 
   // Apply filter + page window
@@ -667,6 +785,7 @@ export default function ForYouClient() {
         <IntentBar
           intentMode={intentMode}
           loading={intentLoading}
+          clearSignal={clearSignal}
           onSubmit={handleIntentSubmit}
           onClear={handleIntentClear}
         />
@@ -698,8 +817,16 @@ export default function ForYouClient() {
           </div>
         ) : intentMode ? (
           intentScored.length === 0 ? (
+            /* Empty state: preserve query context, never silently reset */
             <div className="py-8 text-center">
-              <p className="text-[13px] text-[#9CA3AF] mb-3">No great matches — try different words</p>
+              {activeQuery && (
+                <p className="text-[13px] font-medium text-[#374151] mb-1">
+                  &ldquo;{activeQuery}&rdquo;
+                </p>
+              )}
+              <p className="text-[13px] text-[#9CA3AF] mb-3">
+                No great matches — try different words
+              </p>
               <button
                 onClick={handleIntentClear}
                 className="text-[12px] font-medium text-[#D97706] hover:text-[#B45309] transition-colors"
@@ -709,6 +836,12 @@ export default function ForYouClient() {
             </div>
           ) : (
             <>
+              {/* Active query label — keeps user oriented after submit */}
+              {activeQuery && (
+                <p className="text-[11px] text-[#9CA3AF] mb-3">
+                  Results for <span className="font-semibold text-[#6B7280]">&ldquo;{activeQuery}&rdquo;</span>
+                </p>
+              )}
               <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
                 {intentScored.map(({ item, reason }, idx) => (
                   <div key={item.id} onClick={() => recordClick(item)}>
