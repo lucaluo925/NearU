@@ -33,7 +33,7 @@ import {
 } from '@/lib/recommendations'
 import { Item, UC_DAVIS_LAT, UC_DAVIS_LNG } from '@/lib/types'
 import { CATEGORIES } from '@/lib/constants'
-import { formatTime, cn } from '@/lib/utils'
+import { formatTime, cn, startOfLADay, endOfLADay } from '@/lib/utils'
 import Header from '@/components/Header'
 import Footer from '@/components/Footer'
 
@@ -133,6 +133,9 @@ function intentBoost(item: Item, intent: ParsedIntent): number {
   if (intent.time === 'today' && item.start_time) {
     const h = (new Date(item.start_time).getTime() - Date.now()) / 3_600_000
     if (h > 0 && h < 24) boost += 4
+  } else if (intent.time === 'tomorrow' && item.start_time) {
+    const h = (new Date(item.start_time).getTime() - Date.now()) / 3_600_000
+    if (h >= 24 && h < 48) boost += 4
   }
   return boost
 }
@@ -150,6 +153,8 @@ function intentReason(item: Item, intent: ParsedIntent): string | null {
   if (intent.time === 'today' && item.start_time) {
     const h = (new Date(item.start_time).getTime() - Date.now()) / 3_600_000
     if (h > 0 && h < 24) return 'Happening tonight'
+  } else if (intent.time === 'tomorrow' && item.start_time) {
+    return 'Happening tomorrow'
   }
   if (intent.region === 'on-campus') return 'Near campus'
   if (intent.categories.includes(item.category)) return 'Matches what you asked'
@@ -681,7 +686,44 @@ export default function ForYouClient() {
       }
 
       const res           = await fetch(`/api/items?${params}`)
-      const items: Item[] = res.ok ? await res.json() : []
+      const rawItems: Item[] = res.ok ? await res.json() : []
+
+      // ── Strict time range filter (client-side hard gate) ──────────────────
+      // The API enforces the range at DB level when time is 'today'/'tomorrow'/
+      // 'this-week', but we re-enforce on the client to guard against any leakage
+      // (e.g. items without start_time that the API always includes, or edge cases
+      // where the param was not understood).
+      //
+      // Rules:
+      //  - Items WITHOUT start_time (food spots, places) are always kept — they
+      //    are not time-bound events and should always appear as context.
+      //  - Items WITH start_time are hard-filtered to the declared range.
+      let timeStart: Date | null = null
+      let timeEnd:   Date | null = null
+      const nt = new Date()
+      if (intent.time === 'today') {
+        timeStart = new Date()                // from now (not midnight — no past events)
+        timeEnd   = endOfLADay(nt, 0)
+      } else if (intent.time === 'tomorrow') {
+        timeStart = startOfLADay(nt, 1)
+        timeEnd   = endOfLADay(nt, 1)
+      } else if (intent.time === 'this-week') {
+        timeStart = new Date()
+        timeEnd   = endOfLADay(nt, 7)
+      }
+
+      // eslint-disable-next-line no-console
+      console.log('[intent]', intent.time, timeStart?.toISOString() ?? 'any', timeEnd?.toISOString() ?? 'any')
+
+      const items: Item[] = rawItems.filter(item => {
+        if (!item.start_time) return true    // non-event items always pass
+        if (!timeStart || !timeEnd) return true  // no time constraint
+        const t = new Date(item.start_time).getTime()
+        return t >= timeStart.getTime() && t <= timeEnd.getTime()
+      })
+
+      // eslint-disable-next-line no-console
+      console.log('[filtered count]', items.length, '(from', rawItems.length, 'raw)')
 
       const scored: ScoredItem[] = items
         .filter(item => !intent.exclusions.includes(item.category))
@@ -694,9 +736,13 @@ export default function ForYouClient() {
         .slice(0, 12)
 
       const now         = Date.now()
+      // If we had a strict time filter but got zero results, use a context-aware fallback
+      const noTimeMatch = timeStart !== null && items.length === 0
       const responseText = scored.length > 0
         ? buildIntentResponse(intent, scored.length)
-        : `I couldn't find a great exact match for "${query}" — try these instead 🐾`
+        : noTimeMatch
+          ? `Couldn't find a great match for ${intent.time === 'tomorrow' ? 'tomorrow' : intent.time === 'today' ? 'today' : 'that time'} — here are some close ones 🐾`
+          : `I couldn't find a great exact match for "${query}" — try these instead 🐾`
 
       // Store user query + assistant response as a pair in chat history.
       // Newest-first storage: [assistantMsg, userMsg, ...older]

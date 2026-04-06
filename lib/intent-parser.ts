@@ -21,7 +21,7 @@ export interface ParsedIntent {
   /** Category slugs to exclude from results */
   exclusions:  string[]
   /** Temporal preference */
-  time:        'today' | 'this-week' | null
+  time:        'today' | 'tomorrow' | 'this-week' | null
   /** Budget constraint */
   budget:      'free' | null
   /** Location preference as a region slug */
@@ -141,9 +141,11 @@ export function parseIntent(input: string): ParsedIntent {
   }
 
   // ── 2. Time ───────────────────────────────────────────────────────────────
-  if (/\btonight\b|\btoday\b/.test(phrase))                       result.time = 'today'
+  // Order matters: check most-specific first so "tonight" beats "this week", etc.
+  if      (/\btonight\b|\btoday\b/.test(phrase))                                  result.time = 'today'
+  else if (/\btomorrow\b|\btmr\b|\bnext\s+day\b/.test(phrase))                    result.time = 'tomorrow'
   else if (/\bthis\s+weekend\b|\bweekend\b|\bsaturday\b|\bsunday\b/.test(phrase)) result.time = 'this-week'
-  else if (/\bthis\s+week\b|\bsoon\b|\bupcoming\b/.test(phrase))  result.time = 'this-week'
+  else if (/\bthis\s+week\b|\bsoon\b|\bupcoming\b/.test(phrase))                  result.time = 'this-week'
 
   // ── 3. Budget ─────────────────────────────────────────────────────────────
   if (/\bfree\b/.test(phrase)) result.budget = 'free'
@@ -217,6 +219,7 @@ export function buildIntentResponse(intent: ParsedIntent, count: number): string
   // Modifiers
   if (intent.budget === 'free')          parts.push('free')
   if (intent.time === 'today')           parts.push('tonight')
+  else if (intent.time === 'tomorrow')   parts.push('tomorrow')
   else if (intent.time === 'this-week')  parts.push('this weekend')
   if (intent.region === 'on-campus')     parts.push('near campus')
   else if (intent.region === 'davis')    parts.push('in Davis')
