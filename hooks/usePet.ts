@@ -39,6 +39,13 @@ export async function awardPetXP(action: string): Promise<XpResult | null> {
 }
 
 // ── Hook ──────────────────────────────────────────────────────────────────────
+//
+// Storage contract (Part 7 of data-layer spec):
+//   Logged-in users → DB only (via /api/pet). No localStorage reads or writes.
+//   Guests          → pet is null; no localStorage fallback for pet data.
+//
+// This hook never touches localStorage. All pet state lives exclusively in
+// Supabase (user_pets table) for authenticated users.
 
 export function usePet() {
   const [pet, setPet] = useState<PetState | null>(null)
@@ -50,10 +57,11 @@ export function usePet() {
     try {
       const r = await fetch('/api/pet')
       if (r.ok) {
+        // Logged in → always use DB data
         setIsLoggedOut(false)
         setPet(await r.json())
       } else if (r.status === 401) {
-        // Definitively not logged in — hide the widget
+        // Guest → no pet state (localStorage is not a fallback for pet data)
         setIsLoggedOut(true)
         setPet(null)
       }

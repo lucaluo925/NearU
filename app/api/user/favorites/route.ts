@@ -46,9 +46,16 @@ export async function GET(req: NextRequest) {
 
     const itemCollections: Record<string, string> = {}
     for (const row of (favResult.data ?? [])) {
+      // Normalize: skip rows with unexpected nulls (defensive against DB inconsistency)
+      if (typeof row.item_id !== 'string' || typeof row.collection_name !== 'string') continue
       if (!collections[row.collection_name]) collections[row.collection_name] = []
       collections[row.collection_name].push(row.item_id)
       itemCollections[row.item_id] = row.collection_name
+    }
+
+    // Ensure all collection arrays contain only strings (no nulls)
+    for (const key of Object.keys(collections)) {
+      collections[key] = collections[key].filter((v) => typeof v === 'string')
     }
 
     return NextResponse.json({ collections, itemCollections })

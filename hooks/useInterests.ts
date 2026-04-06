@@ -2,6 +2,10 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react'
 
+// ── Keys ──────────────────────────────────────────────────────────────────────
+// For logged-in users these are a fast-hydration cache only; Supabase is truth.
+// For guests they remain the authoritative store (unchanged behavior).
+
 const KEY       = 'aggie-map-interests'
 const SHOWN_KEY = 'aggie-map-interests-shown'
 
@@ -23,7 +27,10 @@ function lsLoad(): { interests: InterestsStore; shown: boolean } {
   try {
     const raw   = localStorage.getItem(KEY)
     const shown = localStorage.getItem(SHOWN_KEY) === '1'
-    return { interests: raw ? (JSON.parse(raw) as InterestsStore) : emptyInterests(), shown }
+    return {
+      interests: raw ? (JSON.parse(raw) as InterestsStore) : emptyInterests(),
+      shown,
+    }
   } catch {
     return { interests: emptyInterests(), shown: false }
   }
@@ -31,110 +38,165 @@ function lsLoad(): { interests: InterestsStore; shown: boolean } {
 
 function lsSave(interests: InterestsStore, shown: boolean) {
   try {
-    localStorage.setItem(KEY,      JSON.stringify(interests))
+    localStorage.setItem(KEY,       JSON.stringify(interests))
     localStorage.setItem(SHOWN_KEY, shown ? '1' : '')
   } catch {}
+}
+
+// ── Retry-safe fire-and-forget POST ──────────────────────────────────────────
+// Does not block the UI. On failure, retries once after 1 s.
+
+function safePost(fn: () => Promise<Response>): void {
+  fn().catch(() => setTimeout(() => fn().catch(() => {}), 1_000))
+}
+
+// ── Normalize server response ─────────────────────────────────────────────────
+// Defensive against any nulls or wrong types in the DB response.
+
+function normalizeInterests(data: unknown): (InterestsStore & { shown: boolean }) | null {
+  if (!data || typeof data !== 'object') return null
+  const d = data as Record<string, unknown>
+  return {
+    cuisines:   Array.isArray(d.cuisines)   ? (d.cuisines   as string[]) : [],
+    vibes:      Array.isArray(d.vibes)      ? (d.vibes      as string[]) : [],
+    prices:     Array.isArray(d.prices)     ? (d.prices     as string[]) : [],
+    categories: Array.isArray(d.categories) ? (d.categories as string[]) : [],
+    shown:      typeof d.shown === 'boolean' ? d.shown : false,
+  }
 }
 
 // ── Hook ──────────────────────────────────────────────────────────────────────
 
 export function useInterests() {
-  const [interests, setInterests]               = useState<InterestsStore>(emptyInterests)
-  const [hydrated,  setHydrated]                = useState(false)
-  const [shouldShowOnboarding, setShouldShow]   = useState(false)
+  const [interests, setInterests]             = useState<InterestsStore>(emptyInterests)
+  const [hydrated,  setHydrated]              = useState(false)
+  const [shouldShowOnboarding, setShouldShow] = useState(false)
 
-  /**
-   * loggedIn ref — set once the server confirms auth.
-   * Used by save/dismiss to decide whether to also push to the API.
-   * Starts as null (unknown), becomes true/false after the first GET resolves.
-   */
-  const loggedIn = useRef<boolean | null>(null)
+  // ── Refs ──────────────────────────────────────────────────────────────────
+  //
+  // lastLocalUpdateRef: timestamp of the last LOCAL mutation (user action or
+  //   cross-tab storage event). Used to detect stale server responses: if the
+  //   user mutated state AFTER the server fetch started, we skip the overwrite.
+  //
+  // loggedIn: null = auth unknown (pending), true = authenticated, false = guest.
+  const lastLocalUpdateRef = useRef(0)
+  const loggedIn           = useRef<boolean | null>(null)
 
-  // ── Mount: load localStorage, then sync from server ────────────────────────
+  // ── Mount: localStorage → server sync ────────────────────────────────────
   useEffect(() => {
-    // 1. Instant hydration from localStorage (works for guests too)
+    // Step 1: Instant hydration from localStorage (works for guests / SSR).
     const { interests: ls, shown } = lsLoad()
     setInterests(ls)
     if (!shown) setShouldShow(true)
     setHydrated(true)
 
-    // 2. Try to pull from Supabase (logged-in users only)
+    // Step 2: Async server sync. Record when the fetch started so we can
+    //         detect user mutations that happen while it is in-flight.
+    const fetchStart = Date.now()
+
     fetch('/api/user/interests')
       .then(async (r) => {
         if (r.status === 401) {
-          // Not logged in — guest mode, localStorage is the truth
+          // Guest — localStorage is the truth for this session.
           loggedIn.current = false
           return
         }
         loggedIn.current = true
 
         if (r.status === 404 || !r.ok) {
-          // Table not ready or user has no server-side row yet.
-          // If we have local interests, push them up so the server catches up.
+          // No server row yet. Promote local data so Supabase catches up.
           const hasLocal =
             ls.cuisines.length   > 0 ||
             ls.vibes.length      > 0 ||
             ls.prices.length     > 0 ||
             ls.categories.length > 0
           if (hasLocal) {
-            fetch('/api/user/interests', {
+            safePost(() => fetch('/api/user/interests', {
               method:  'POST',
               headers: { 'Content-Type': 'application/json' },
               body:    JSON.stringify({ ...ls, shown }),
-            }).catch(() => {})
+            }))
           }
           return
         }
 
-        const data = await r.json() as (InterestsStore & { shown: boolean }) | null
-        if (!data) return
+        // ── Race guard ──────────────────────────────────────────────────────
+        // If the user mutated state after this fetch was initiated, the
+        // server response is stale — discard it so we don't lose their changes.
+        if (lastLocalUpdateRef.current > fetchStart) return
 
-        // Server data wins — replace local state and update localStorage cache
-        const serverInterests: InterestsStore = {
-          cuisines:   data.cuisines   ?? [],
-          vibes:      data.vibes      ?? [],
-          prices:     data.prices     ?? [],
-          categories: data.categories ?? [],
-        }
-        setInterests(serverInterests)
-        setShouldShow(!data.shown)
-        lsSave(serverInterests, data.shown ?? false)
+        const normalized = normalizeInterests(await r.json())
+        if (!normalized) return
+
+        setInterests(normalized)
+        setShouldShow(!normalized.shown)
+        lsSave(normalized, normalized.shown)
       })
       .catch(() => {
-        // Network error — stay on localStorage
+        // Network failure — stay on localStorage data.
         loggedIn.current = false
       })
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // ── save: persist interests (onboarding complete) ───────────────────────────
+  // ── Multi-tab sync ───────────────────────────────────────────────────────
+  // When another tab writes to localStorage, keep this tab's state in sync.
+  // Mark as a local update so any in-flight server fetch won't clobber it.
+  useEffect(() => {
+    function onStorage(e: StorageEvent) {
+      if (e.key === KEY && e.newValue !== null) {
+        try {
+          const parsed = JSON.parse(e.newValue) as InterestsStore
+          lastLocalUpdateRef.current = Date.now()
+          setInterests(parsed)
+        } catch {}
+      }
+      if (e.key === SHOWN_KEY) {
+        setShouldShow(e.newValue !== '1')
+      }
+    }
+    window.addEventListener('storage', onStorage)
+    return () => window.removeEventListener('storage', onStorage)
+  }, [])
+
+  // ── save ─────────────────────────────────────────────────────────────────
   const save = useCallback((next: InterestsStore) => {
+    // Mark local mutation BEFORE setState so the race guard timestamp is correct.
+    lastLocalUpdateRef.current = Date.now()
     setInterests(next)
     lsSave(next, true)
     setShouldShow(false)
 
+    console.log('[analytics] interest_set', {
+      cuisines_count:   next.cuisines.length,
+      vibes_count:      next.vibes.length,
+      prices_count:     next.prices.length,
+      categories_count: next.categories.length,
+    })
+
     if (loggedIn.current) {
-      fetch('/api/user/interests', {
+      safePost(() => fetch('/api/user/interests', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({ ...next, shown: true }),
-      }).catch(() => {})
+      }))
     }
   }, [])
 
-  // ── dismiss: mark onboarding as seen without saving preferences ─────────────
+  // ── dismiss ───────────────────────────────────────────────────────────────
   const dismiss = useCallback(() => {
+    lastLocalUpdateRef.current = Date.now()
     try { localStorage.setItem(SHOWN_KEY, '1') } catch {}
     setShouldShow(false)
 
     if (loggedIn.current) {
-      // Persist current interests with shown=true
+      // Read current interests out of state to include in the POST.
       setInterests((current) => {
-        fetch('/api/user/interests', {
+        safePost(() => fetch('/api/user/interests', {
           method:  'POST',
           headers: { 'Content-Type': 'application/json' },
           body:    JSON.stringify({ ...current, shown: true }),
-        }).catch(() => {})
+        }))
         return current
       })
     }
