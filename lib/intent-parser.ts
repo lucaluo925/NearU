@@ -195,42 +195,60 @@ export function parseIntent(input: string): ParsedIntent {
 
 // ── Pet-voice response message ────────────────────────────────────────────────
 //
-// Produces a short, grounded assistant sentence from the parsed intent + count.
+// Produces a short, opinionated assistant message from the parsed intent.
+// No count references — sounds like a confident friend, not a search engine.
 
 export function buildIntentResponse(intent: ParsedIntent, count: number): string {
-  // Build a natural description of what was asked for
-  const parts: string[] = []
-
-  // Lead with vibe if present
-  if (intent.vibes.includes('chill') || intent.vibes.includes('quiet'))   parts.push('something chill')
-  else if (intent.vibes.includes('cozy'))                                  parts.push('a cozy spot')
-  else if (intent.vibes.includes('social') || intent.vibes.includes('fun')) parts.push('something social')
-  else if (intent.vibes.includes('outdoorsy'))                             parts.push('outdoor spots')
-  else if (intent.vibes.includes('romantic'))                              parts.push('something romantic')
-  else if (intent.vibes.includes('artsy'))                                 parts.push('something artsy')
-  else if (intent.vibes.includes('active'))                                parts.push('something active')
-
-  // Category if no vibe, or to add specificity
-  if (intent.categories.length > 0 && parts.length === 0) {
-    const cat = intent.categories[0]
-    parts.push(cat === 'food' ? 'food spots' : cat)
+  if (count === 0) {
+    return "couldn't find a perfect match right now — here are the closest ones 🐾"
   }
 
-  // Modifiers
-  if (intent.budget === 'free')          parts.push('free')
-  if (intent.time === 'today')           parts.push('tonight')
-  else if (intent.time === 'tomorrow')   parts.push('tomorrow')
-  else if (intent.time === 'this-week')  parts.push('this weekend')
-  if (intent.region === 'on-campus')     parts.push('near campus')
-  else if (intent.region === 'davis')    parts.push('in Davis')
-  else if (intent.region === 'sacramento') parts.push('in Sacramento')
+  // ── Vibe-led messages ────────────────────────────────────────────────────
+  if (intent.vibes.includes('chill') || intent.vibes.includes('quiet')) {
+    if (intent.time === 'today') return 'this feels like your kind of night 🌙'
+    return 'lowkey a solid pick for this 🐾'
+  }
+  if (intent.vibes.includes('cozy')) {
+    return 'this one has cozy vibes written all over it 🐾'
+  }
+  if (intent.vibes.includes('social') || intent.vibes.includes('fun')) {
+    if (intent.time === 'today') return 'this looks like a good time tonight 🎉'
+    return 'this one looks worth showing up to 🐾'
+  }
+  if (intent.vibes.includes('outdoorsy') || intent.vibes.includes('active')) {
+    return 'get some air — this one looks good 🌿'
+  }
+  if (intent.vibes.includes('romantic')) {
+    return "solid pick if you're feeling fancy 🐾"
+  }
+  if (intent.vibes.includes('artsy')) {
+    return 'this one has some real energy to it 🐾'
+  }
 
-  const what = parts.length > 0 ? parts.join(', ') : 'something for you'
-  const cap  = what.charAt(0).toUpperCase() + what.slice(1)
+  // ── Category-led messages ────────────────────────────────────────────────
+  const cat = intent.categories[0]
+  if (cat === 'food') {
+    if (intent.budget === 'free') return 'free food and it actually looks good 🍜'
+    if (intent.time === 'today')  return "this one's worth going to tonight 🍜"
+    return "you'd probably enjoy this one 🍜"
+  }
+  if (cat === 'outdoor') return 'get some fresh air — this is a good pick 🌿'
+  if (cat === 'events') {
+    if (intent.time === 'today') return 'this is the one for tonight 🌙'
+    return 'this one looks worth leaving the house for 🐾'
+  }
+  if (cat === 'study') return 'this spot would work 📚'
 
-  if (count === 0)  return `Looking for ${what}? Couldn't find a great match 🐾`
-  if (count === 1)  return `${cap}? Found 1 that fits 🎯`
-  return `${cap}? Found ${count} that fit 🎯`
+  // ── Time-led fallbacks ───────────────────────────────────────────────────
+  if (intent.time === 'today')      return 'this is perfect for tonight 🐾'
+  if (intent.time === 'tomorrow')   return 'good pick for tomorrow 🐾'
+  if (intent.time === 'this-week')  return 'this looks worth doing this week 🐾'
+
+  // ── Budget fallback ──────────────────────────────────────────────────────
+  if (intent.budget === 'free') return "free and actually worth it 🐾"
+
+  // ── Generic opinionated fallback ─────────────────────────────────────────
+  return "you'd probably like this one 🐾"
 }
 
 // ── Supported intents (for documentation / hints) ────────────────────────────

@@ -35,6 +35,11 @@ export interface ScoredItem {
   reason: string | null
 }
 
+export interface TopPicks {
+  top:     ScoredItem | null
+  backups: ScoredItem[]
+}
+
 /** Empty context — safe default when no profile data is available. */
 export const EMPTY_CTX: ScoreContext = {
   savedTagSet:   new Set(),
@@ -115,38 +120,37 @@ export function scoreItem(item: Item, ctx: ScoreContext): number {
 }
 
 // ── "Why this is for you" label ───────────────────────────────────────────────
+//
+// Short pill-style labels — designed to be rendered as a small badge on cards.
+// Intentionally terse and opinionated rather than long or generic.
 
 export function reasonFor(item: Item, ctx: ScoreContext): string | null {
   const itemTags = (item.tags ?? []).map(t => t.toLowerCase())
 
-  if (ctx.savedCatSet.has(item.category))
-    return `Because you saved ${item.category} spots`
-
-  if (ctx.clickedCatTop.has(item.category))
-    return `You often explore ${item.category}`
-
+  if (ctx.savedCatSet.has(item.category))        return 'matches your taste'
+  if (ctx.clickedCatTop.has(item.category))       return "you're into this"
   if (item.subcategory && ctx.clickedSubTop.has(item.subcategory))
-    return `Matches your ${item.subcategory.replace(/-/g, ' ')} history`
+                                                   return 'your kind of vibe'
 
   const savedTag = itemTags.find(t => ctx.savedTagSet.has(t))
-  if (savedTag) return `Matches your "${savedTag.replace(/-/g, ' ')}" interest`
+  if (savedTag) return `fits your "${savedTag.replace(/-/g, ' ')}" vibe`
 
   if (itemTags.some(t => ctx.clickedTagTop.has(t)))
-    return 'Similar to what you clicked'
+                                                   return "you'd probably like this"
 
   if (item.start_time) {
     const h = (new Date(item.start_time).getTime() - Date.now()) / 3_600_000
-    if (h > 0 && h < 10)  return 'Happening tonight'
-    if (h >= 10 && h < 24) return 'Happening today'
-    if (h >= 24 && h < 48) return 'Happening tomorrow'
+    if (h > 0 && h < 10)   return 'happening tonight'
+    if (h >= 10 && h < 24) return 'happening today'
+    if (h >= 24 && h < 48) return 'happening tomorrow'
   }
 
   if ((item.avg_rating ?? 0) >= 4 && (item.review_count ?? 0) >= 3)
-    return 'Highly rated'
+                                                   return 'highly rated'
 
   if (item.created_at) {
     const d = (Date.now() - new Date(item.created_at).getTime()) / 86_400_000
-    if (d < 3) return 'New this week'
+    if (d < 3) return 'just added'
   }
 
   return null
@@ -184,4 +188,52 @@ export async function fetchScoredFeed(
     }))
     .sort((a, b) => b.score - a.score)
     .slice(0, limit)
+}
+
+// ── Top Pick + Backup Picks selector ─────────────────────────────────────────
+//
+// Produces a hierarchy: 1 Top Pick + up to `numBackups` Backup Picks.
+//
+// Rules applied in order:
+//  1. Skip items whose IDs are in `seenIds` (cross-surface deduplication)
+//  2. Pick the highest-scoring item as the Top Pick (no restrictions)
+//  3. For Backup Picks: prefer items from different categories than the Top Pick
+//     to avoid a wall of same-type items. Falls back to same-category if the
+//     feed has no variety.
+//
+// This is a client-side reranking pass — it runs fast and never touches the DB.
+
+export function pickTopAndBackups(
+  scored:     ScoredItem[],
+  seenIds:    Set<string> = new Set(),
+  numBackups: number      = 2,
+): TopPicks {
+  const pool = scored.filter(s => !seenIds.has(s.item.id))
+  if (pool.length === 0) return { top: null, backups: [] }
+
+  const top = pool[0]
+
+  // Prefer backups from different categories for visual diversity
+  const usedCats   = new Set([top.item.category])
+  const backups:   ScoredItem[] = []
+  const sameCatQ:  ScoredItem[] = []
+
+  for (const s of pool.slice(1)) {
+    if (backups.length + sameCatQ.length >= numBackups * 4) break  // early exit
+    if (!usedCats.has(s.item.category)) {
+      backups.push(s)
+      usedCats.add(s.item.category)
+    } else {
+      sameCatQ.push(s)
+    }
+    if (backups.length >= numBackups) break
+  }
+
+  // Fill remaining slots from same-category overflow
+  for (const s of sameCatQ) {
+    if (backups.length >= numBackups) break
+    backups.push(s)
+  }
+
+  return { top, backups: backups.slice(0, numBackups) }
 }

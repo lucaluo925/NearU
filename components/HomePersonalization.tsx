@@ -33,9 +33,11 @@ import {
   scoreItem,
   reasonFor,
   fetchScoredFeed,
+  pickTopAndBackups,
   type ScoreContext,
   type ScoredItem,
 } from '@/lib/recommendations'
+import { getSeenIds, markSeen } from '@/lib/session-seen'
 import { Item, UC_DAVIS_LAT, UC_DAVIS_LNG } from '@/lib/types'
 import { CATEGORIES } from '@/lib/constants'
 import { formatTime, cn } from '@/lib/utils'
@@ -76,6 +78,47 @@ function intentReason(item: Item, intent: ParsedIntent): string | null {
   if (intent.region === 'on-campus') return 'Near campus'
   if (intent.categories.includes(item.category)) return 'Matches what you asked'
   return null
+}
+
+// ── Chip filter ───────────────────────────────────────────────────────────────
+//
+// Quick-filter chips that boost scoring in-place rather than navigate away.
+// Clicking a chip re-scores the cached feed and immediately updates the top picks.
+
+export type ChipFilter = 'tonight' | 'food' | 'chill' | 'campus' | null
+
+function applyChipBoost(scored: ScoredItem[], chip: ChipFilter): ScoredItem[] {
+  if (!chip) return scored
+  return scored
+    .map(s => {
+      const tags = (s.item.tags ?? []).map(t => t.toLowerCase())
+      let bonus  = 0
+      switch (chip) {
+        case 'tonight':
+          if (s.item.start_time) {
+            const h = (new Date(s.item.start_time).getTime() - Date.now()) / 3_600_000
+            if (h > 0 && h < 24) bonus = 12
+          }
+          break
+        case 'food':
+          if (s.item.category === 'food') bonus = 10
+          break
+        case 'chill':
+          if (
+            s.item.category === 'outdoor' ||
+            tags.some(t => ['outdoor', 'quiet', 'cafe', 'coffee', 'study-spot'].includes(t))
+          ) bonus = 10
+          break
+        case 'campus':
+          if (
+            s.item.category === 'campus' ||
+            tags.some(t => ['on-campus', 'near-campus', 'student-friendly'].includes(t))
+          ) bonus = 10
+          break
+      }
+      return bonus > 0 ? { ...s, score: s.score + bonus } : s
+    })
+    .sort((a, b) => b.score - a.score)
 }
 
 // ── Chat memory ───────────────────────────────────────────────────────────────
@@ -281,36 +324,52 @@ function PetChatPanel({
   )
 }
 
-// ── Assistant quick actions ───────────────────────────────────────────────────
+// ── Assistant quick-action chips ─────────────────────────────────────────────
+//
+// Scoring chips — not navigation links.
+// Each chip applies a large score boost to matching items and immediately
+// re-renders Top Pick + Backup Picks without a page reload.
+// Clicking the active chip again de-selects it.
 
-interface AssistantAction { label: string; href: string; cat?: string }
-
-const ACTIONS: AssistantAction[] = [
-  { label: '🌙 Tonight',     href: '/search?category=events&time=today', cat: 'events'  },
-  { label: '🍜 Food spots',  href: '/food',                              cat: 'food'    },
-  { label: '🌿 Chill spots', href: '/search?tag=outdoor&sort=top-rated', cat: 'outdoor' },
-  { label: '📍 Near campus', href: '/search?region=on-campus'                           },
+const CHIP_DEFS: { id: ChipFilter; label: string; cat?: string }[] = [
+  { id: 'tonight', label: '🌙 Tonight',     cat: 'events'  },
+  { id: 'food',    label: '🍜 Food spots',  cat: 'food'    },
+  { id: 'chill',   label: '🌿 Chill spots', cat: 'outdoor' },
+  { id: 'campus',  label: '📍 Near campus'                 },
 ]
 
-function AssistantActions({ dominantCat }: { dominantCat: string | null }) {
+function AssistantActions({
+  dominantCat,
+  activeChip,
+  onChipSelect,
+}: {
+  dominantCat:  string | null
+  activeChip:   ChipFilter
+  onChipSelect: (chip: ChipFilter) => void
+}) {
   const sorted = useMemo(() => {
-    if (!dominantCat) return ACTIONS
+    if (!dominantCat) return CHIP_DEFS
     return [
-      ...ACTIONS.filter(a => a.cat === dominantCat),
-      ...ACTIONS.filter(a => a.cat !== dominantCat),
+      ...CHIP_DEFS.filter(a => a.cat === dominantCat),
+      ...CHIP_DEFS.filter(a => a.cat !== dominantCat),
     ]
   }, [dominantCat])
 
   return (
     <div className="flex gap-2 overflow-x-auto scrollbar-hide pb-0.5 -mx-6 px-6 mb-4">
       {sorted.map(a => (
-        <Link
-          key={a.href}
-          href={a.href}
-          className="flex-none text-[12px] font-medium text-[#374151] bg-white border border-[#E5E7EB] rounded-full px-3 py-1 hover:border-[#D1D5DB] hover:bg-[#F9FAFB] hover:shadow-sm transition-all whitespace-nowrap"
+        <button
+          key={a.id}
+          onClick={() => onChipSelect(activeChip === a.id ? null : a.id)}
+          className={cn(
+            'flex-none text-[12px] font-medium rounded-full px-3 py-1 transition-all whitespace-nowrap',
+            activeChip === a.id
+              ? 'bg-[#111111] text-white shadow-sm'
+              : 'bg-white border border-[#E5E7EB] text-[#374151] hover:border-[#D1D5DB] hover:bg-[#F9FAFB] hover:shadow-sm',
+          )}
         >
           {a.label}
-        </Link>
+        </button>
       ))}
     </div>
   )
@@ -405,59 +464,266 @@ function CardSkeleton() {
   )
 }
 
-// ── Feed section ──────────────────────────────────────────────────────────────
+// ── Top Pick card ─────────────────────────────────────────────────────────────
+// Full-width hero card: large image, reason pill, strong "View →" CTA.
+
+function TopPickCard({
+  item,
+  reason,
+  onClick,
+}: {
+  item:    Item
+  reason?: string | null
+  onClick?: (item: Item) => void
+}) {
+  const cat      = CATEGORIES.find(c => c.slug === item.category)
+  const gradient = CAT_GRADIENT[item.category] ?? 'from-[#F3F4F6] to-[#E9EAEC]'
+  const time     = item.start_time ? formatTime(item.start_time) : null
+  const loc      = item.location_name ?? item.city ?? ''
+
+  return (
+    <Link
+      href={`/listing/${item.id}`}
+      onClick={() => onClick?.(item)}
+      className="group relative w-full bg-white rounded-2xl border border-[#E5E7EB] shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all duration-200 overflow-hidden flex flex-col"
+    >
+      {/* Image — taller than the grid cards */}
+      <div className={cn('relative h-[190px] w-full shrink-0 overflow-hidden bg-gradient-to-br', gradient)}>
+        {item.flyer_image_url ? (
+          <Image
+            src={item.flyer_image_url}
+            alt={item.title}
+            fill
+            className="object-cover group-hover:scale-[1.03] transition-transform duration-300"
+            sizes="(max-width:640px) 100vw, 75vw"
+            priority
+          />
+        ) : (
+          <div className="absolute inset-0 flex items-center justify-center">
+            <span className="text-5xl opacity-30 select-none">{cat?.icon ?? '📌'}</span>
+          </div>
+        )}
+        {/* Top Pick badge */}
+        <div className="absolute top-3 left-3">
+          <span className="text-[10px] font-bold text-white bg-black/70 backdrop-blur-sm rounded-full px-2 py-0.5 uppercase tracking-wide">
+            Top Pick
+          </span>
+        </div>
+      </div>
+
+      {/* Body */}
+      <div className="flex flex-col p-4 flex-1">
+        <h3 className="text-[15px] font-bold text-[#111111] leading-snug line-clamp-2 mb-2 group-hover:text-[#333] transition-colors">
+          {item.title}
+        </h3>
+
+        {/* Reason pill */}
+        {reason && (
+          <span className="inline-flex items-center self-start text-[10px] font-semibold text-amber-700 bg-amber-50 border border-amber-100 rounded-full px-2 py-0.5 mb-3">
+            🐾 {reason}
+          </span>
+        )}
+
+        <div className="mt-auto flex items-center justify-between gap-3">
+          <div className="flex flex-col gap-0.5 min-w-0">
+            {loc && (
+              <p className="flex items-center gap-1 text-[11px] text-[#9CA3AF] truncate">
+                <MapPin className="w-2.5 h-2.5 shrink-0" />
+                <span className="truncate">{loc}</span>
+              </p>
+            )}
+            {time ? (
+              <p className="flex items-center gap-1 text-[11px] text-[#6B7280]">
+                <Clock className="w-2.5 h-2.5 shrink-0 text-[#9CA3AF]" />
+                <span>{time}</span>
+              </p>
+            ) : (
+              <p className="text-[11px] text-[#9CA3AF] capitalize">{cat?.label ?? item.category}</p>
+            )}
+          </div>
+
+          {/* CTA */}
+          <span className="shrink-0 inline-flex items-center gap-1 text-[12px] font-semibold text-[#111111] bg-[#F3F4F6] group-hover:bg-[#E5E7EB] rounded-full px-3.5 py-1.5 transition-colors whitespace-nowrap">
+            View
+            <ArrowRight className="w-3 h-3" />
+          </span>
+        </div>
+      </div>
+    </Link>
+  )
+}
+
+// ── Backup Pick card ──────────────────────────────────────────────────────────
+// Horizontal card: thumbnail + text. Secondary weight vs. Top Pick.
+
+function BackupPickCard({
+  item,
+  reason,
+  onClick,
+}: {
+  item:    Item
+  reason?: string | null
+  onClick?: (item: Item) => void
+}) {
+  const cat      = CATEGORIES.find(c => c.slug === item.category)
+  const gradient = CAT_GRADIENT[item.category] ?? 'from-[#F3F4F6] to-[#E9EAEC]'
+  const time     = item.start_time ? formatTime(item.start_time) : null
+  const loc      = item.location_name ?? item.city ?? ''
+
+  return (
+    <Link
+      href={`/listing/${item.id}`}
+      onClick={() => onClick?.(item)}
+      className="group bg-white rounded-2xl border border-[#E5E7EB] shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all duration-200 overflow-hidden flex flex-row gap-3 p-3"
+    >
+      {/* Thumbnail */}
+      <div className={cn('relative w-[72px] h-[72px] shrink-0 rounded-xl overflow-hidden bg-gradient-to-br', gradient)}>
+        {item.flyer_image_url ? (
+          <Image
+            src={item.flyer_image_url}
+            alt={item.title}
+            fill
+            className="object-cover group-hover:scale-[1.03] transition-transform duration-300"
+            sizes="72px"
+          />
+        ) : (
+          <div className="absolute inset-0 flex items-center justify-center">
+            <span className="text-2xl opacity-40 select-none">{cat?.icon ?? '📌'}</span>
+          </div>
+        )}
+      </div>
+
+      {/* Text */}
+      <div className="flex flex-col flex-1 min-w-0 justify-between py-0.5">
+        <div>
+          <div className="flex items-start justify-between gap-1">
+            <h3 className="text-[13px] font-bold text-[#111111] leading-snug line-clamp-2 flex-1 group-hover:text-[#333] transition-colors">
+              {item.title}
+            </h3>
+            <ArrowRight className="w-3 h-3 text-[#C4C9D4] group-hover:text-[#9CA3AF] shrink-0 mt-0.5" />
+          </div>
+          {reason && (
+            <p className="text-[10px] text-[#9CA3AF] mt-0.5 truncate">{reason}</p>
+          )}
+        </div>
+        <p className="text-[11px] text-[#9CA3AF] flex items-center gap-1 mt-1.5">
+          {time ? (
+            <>
+              <Clock className="w-2.5 h-2.5 shrink-0" />
+              <span>{time}</span>
+            </>
+          ) : loc ? (
+            <>
+              <MapPin className="w-2.5 h-2.5 shrink-0" />
+              <span className="truncate">{loc}</span>
+            </>
+          ) : (
+            <span className="capitalize">{cat?.label ?? item.category}</span>
+          )}
+        </p>
+      </div>
+    </Link>
+  )
+}
+
+// ── Top-Pick skeleton ─────────────────────────────────────────────────────────
+
+function TopPickSkeleton() {
+  return (
+    <div className="flex flex-col gap-3 animate-pulse">
+      <div className="w-full h-[280px] bg-white rounded-2xl border border-[#E5E7EB] overflow-hidden">
+        <div className="h-[190px] bg-[#F3F4F6]" />
+        <div className="p-4 flex flex-col gap-2">
+          <div className="h-4 bg-[#F3F4F6] rounded w-3/4" />
+          <div className="h-3 bg-[#F3F4F6] rounded w-1/3" />
+        </div>
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        {[0, 1].map(i => (
+          <div key={i} className="h-[96px] bg-white rounded-2xl border border-[#E5E7EB]" />
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// ── Feed section (Top Pick hierarchy) ────────────────────────────────────────
+//
+// Shows: 1 Top Pick (large hero card) + 2 Backup Picks (horizontal cards).
+// Applies chip boost before picking so chips have an immediate visible effect.
+// Registers shown items into the session-seen set for cross-surface dedup.
 
 interface FeedProps {
   savedTags:   string[]
   savedCats:   string[]
   ctx:         ScoreContext
+  activeChip:  ChipFilter
   recordClick: (item: Item) => void
 }
 
-function ForYouSection({ savedTags, savedCats, ctx, recordClick }: FeedProps) {
-  const [scored, setScored] = useState<ScoredItem[]>([])
-  const [loading, setLoading] = useState(true)
+function ForYouSection({ savedTags, savedCats, ctx, activeChip, recordClick }: FeedProps) {
+  const [baseScored, setBaseScored] = useState<ScoredItem[]>([])
+  const [loading, setLoading]       = useState(true)
 
+  // Load once on hydration — chip changes re-derive picks from cached baseScored
   useEffect(() => {
     let cancelled = false
-
     async function load() {
       try {
-        const result = await fetchScoredFeed(ctx, savedTags, 16)
-        if (!cancelled) setScored(result)
+        const result = await fetchScoredFeed(ctx, savedTags, 24)
+        if (!cancelled) setBaseScored(result)
       } catch {
         // silent — network blip should not break the homepage
       } finally {
         if (!cancelled) setLoading(false)
       }
     }
-
     load()
     return () => { cancelled = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [savedTags.join(','), savedCats.join(',')])
 
-  if (loading) {
-    return (
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-        {Array.from({ length: 8 }).map((_, i) => <CardSkeleton key={i} />)}
-      </div>
-    )
-  }
+  const { top, backups } = useMemo(() => {
+    const boosted  = applyChipBoost(baseScored, activeChip)
+    const seenIds  = getSeenIds()
+    return pickTopAndBackups(boosted, seenIds)
+  }, [baseScored, activeChip])
 
-  if (scored.length === 0) return null
+  // Register shown items so /for-you page's featured section won't repeat them
+  useEffect(() => {
+    const ids: string[] = []
+    if (top)           ids.push(top.item.id)
+    backups.forEach(b => ids.push(b.item.id))
+    if (ids.length > 0) markSeen(ids)
+  }, [top, backups])
+
+  if (loading) return <TopPickSkeleton />
+  if (!top)    return null
 
   return (
-    <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-      {scored.map(({ item, reason }, idx) => (
-        <ForYouCard
-          key={item.id}
-          item={item}
-          reason={reason}
-          showBadge={idx < 3}
-          onClick={recordClick}
-        />
-      ))}
+    <div className="flex flex-col gap-3">
+      {/* Top Pick — full width, most prominent */}
+      <TopPickCard item={top.item} reason={top.reason} onClick={recordClick} />
+
+      {/* Backup Picks — side by side below */}
+      {backups.length > 0 && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          {backups.map(b => (
+            <BackupPickCard key={b.item.id} item={b.item} reason={b.reason} onClick={recordClick} />
+          ))}
+        </div>
+      )}
+
+      {/* See all link */}
+      <div className="flex justify-center mt-1">
+        <Link
+          href="/for-you"
+          className="inline-flex items-center gap-1 text-[12px] font-medium text-[#9CA3AF] hover:text-[#374151] transition-colors"
+        >
+          See more picks
+          <ArrowRight className="w-3 h-3" />
+        </Link>
+      </div>
     </div>
   )
 }
@@ -610,6 +876,9 @@ export default function HomePersonalization() {
   const [intentLoading, setIntentLoading] = useState(false)
   const [intentScored, setIntentScored]   = useState<ScoredItem[]>([])
 
+  // ── Chip filter ──────────────────────────────────────────────────────────
+  const [activeChip, setActiveChip] = useState<ChipFilter>(null)
+
   const dominantCat = getDominantTaste(profile)
 
   const ctx = useMemo(
@@ -737,6 +1006,30 @@ export default function HomePersonalization() {
     setIntentScored([])
   }, [])
 
+  // ── Chip select handler ──────────────────────────────────────────────────
+  const CHIP_MESSAGES: Record<NonNullable<ChipFilter>, string> = {
+    tonight: "here's what's on tonight 🌙",
+    food:    "some solid food spots for you 🍜",
+    chill:   "low-key picks — take it easy 🌿",
+    campus:  "stuff close to campus 📍",
+  }
+
+  const handleChipSelect = useCallback((chip: ChipFilter) => {
+    setActiveChip(chip)
+    if (chip) {
+      setAssistantMsg(CHIP_MESSAGES[chip])
+    } else {
+      // Restore contextual message when chip is cleared
+      const now     = new Date().getHours()
+      const summary = tasteSummary(profile)
+      if (summary)        setAssistantMsg(`you always end up around ${summary} 😌`)
+      else if (now >= 17) setAssistantMsg('you might like these tonight 👀')
+      else if (now >= 12) setAssistantMsg('picked some things for you 🎯')
+      else                setAssistantMsg("here's what's on today 🌅")
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profile])
+
   return (
     <>
       {/* ── For You 🔥 ─────────────────────────────────────────────────────────── */}
@@ -771,8 +1064,12 @@ export default function HomePersonalization() {
           onOpenChat={() => setChatOpen(true)}
         />
 
-        {/* Quick action pills */}
-        <AssistantActions dominantCat={dominantCat} />
+        {/* Quick action chips — click to boost scoring, not navigate */}
+        <AssistantActions
+          dominantCat={dominantCat}
+          activeChip={activeChip}
+          onChipSelect={handleChipSelect}
+        />
 
         {/* ChatGPT-lite intent input */}
         <IntentBar
@@ -798,6 +1095,7 @@ export default function HomePersonalization() {
             savedTags={allTags}
             savedCats={interests.categories}
             ctx={ctx}
+            activeChip={activeChip}
             recordClick={recordClick}
           />
         )}

@@ -407,7 +407,7 @@ const PET_INITIATES = [
   "you might like this",
   "hmm… what should we check",
   "something good is out there",
-  "I found something for you",
+  "you'd probably like this one",
 ] as const
 
 // ── Guest dialogue ────────────────────────────────────────────────────────────

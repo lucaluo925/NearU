@@ -28,9 +28,11 @@ import {
   scoreItem,
   reasonFor,
   fetchScoredFeed,
+  pickTopAndBackups,
   type ScoreContext,
   type ScoredItem,
 } from '@/lib/recommendations'
+import { getSeenIds, markSeen } from '@/lib/session-seen'
 import { Item, UC_DAVIS_LAT, UC_DAVIS_LNG } from '@/lib/types'
 import { CATEGORIES } from '@/lib/constants'
 import { formatTime, cn, startOfLADay, endOfLADay } from '@/lib/utils'
@@ -530,6 +532,134 @@ function CardSkeleton() {
   )
 }
 
+// ── Top Pick card (featured section) ─────────────────────────────────────────
+
+function TopPickCard({
+  item,
+  reason,
+  onClick,
+}: {
+  item:     Item
+  reason?:  string | null
+  onClick?: (item: Item) => void
+}) {
+  const cat      = CATEGORIES.find(c => c.slug === item.category)
+  const gradient = CAT_GRADIENT[item.category] ?? 'from-[#F3F4F6] to-[#E9EAEC]'
+  const time     = item.start_time ? formatTime(item.start_time) : null
+  const loc      = item.location_name ?? item.city ?? ''
+
+  return (
+    <Link
+      href={`/listing/${item.id}`}
+      onClick={() => onClick?.(item)}
+      className="group relative w-full bg-white rounded-2xl border border-[#E5E7EB] shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all duration-200 overflow-hidden flex flex-col"
+    >
+      <div className={cn('relative h-[190px] w-full shrink-0 overflow-hidden bg-gradient-to-br', gradient)}>
+        {item.flyer_image_url ? (
+          <Image src={item.flyer_image_url} alt={item.title} fill
+            className="object-cover group-hover:scale-[1.03] transition-transform duration-300"
+            sizes="(max-width:640px) 100vw, 75vw" />
+        ) : (
+          <div className="absolute inset-0 flex items-center justify-center">
+            <span className="text-5xl opacity-30 select-none">{cat?.icon ?? '📌'}</span>
+          </div>
+        )}
+        <div className="absolute top-3 left-3">
+          <span className="text-[10px] font-bold text-white bg-black/70 backdrop-blur-sm rounded-full px-2 py-0.5 uppercase tracking-wide">
+            Top Pick
+          </span>
+        </div>
+      </div>
+      <div className="flex flex-col p-4 flex-1">
+        <h3 className="text-[15px] font-bold text-[#111111] leading-snug line-clamp-2 mb-2 group-hover:text-[#333] transition-colors">
+          {item.title}
+        </h3>
+        {reason && (
+          <span className="inline-flex items-center self-start text-[10px] font-semibold text-amber-700 bg-amber-50 border border-amber-100 rounded-full px-2 py-0.5 mb-3">
+            🐾 {reason}
+          </span>
+        )}
+        <div className="mt-auto flex items-center justify-between gap-3">
+          <div className="flex flex-col gap-0.5 min-w-0">
+            {loc && (
+              <p className="flex items-center gap-1 text-[11px] text-[#9CA3AF] truncate">
+                <MapPin className="w-2.5 h-2.5 shrink-0" /><span className="truncate">{loc}</span>
+              </p>
+            )}
+            {time ? (
+              <p className="flex items-center gap-1 text-[11px] text-[#6B7280]">
+                <Clock className="w-2.5 h-2.5 shrink-0 text-[#9CA3AF]" /><span>{time}</span>
+              </p>
+            ) : (
+              <p className="text-[11px] text-[#9CA3AF] capitalize">{cat?.label ?? item.category}</p>
+            )}
+          </div>
+          <span className="shrink-0 inline-flex items-center gap-1 text-[12px] font-semibold text-[#111111] bg-[#F3F4F6] group-hover:bg-[#E5E7EB] rounded-full px-3.5 py-1.5 transition-colors whitespace-nowrap">
+            View<ArrowRight className="w-3 h-3" />
+          </span>
+        </div>
+      </div>
+    </Link>
+  )
+}
+
+// ── Backup Pick card (featured section) ──────────────────────────────────────
+
+function BackupPickCard({
+  item,
+  reason,
+  onClick,
+}: {
+  item:     Item
+  reason?:  string | null
+  onClick?: (item: Item) => void
+}) {
+  const cat      = CATEGORIES.find(c => c.slug === item.category)
+  const gradient = CAT_GRADIENT[item.category] ?? 'from-[#F3F4F6] to-[#E9EAEC]'
+  const time     = item.start_time ? formatTime(item.start_time) : null
+  const loc      = item.location_name ?? item.city ?? ''
+
+  return (
+    <Link
+      href={`/listing/${item.id}`}
+      onClick={() => onClick?.(item)}
+      className="group bg-white rounded-2xl border border-[#E5E7EB] shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all duration-200 overflow-hidden flex flex-row gap-3 p-3"
+    >
+      <div className={cn('relative w-[72px] h-[72px] shrink-0 rounded-xl overflow-hidden bg-gradient-to-br', gradient)}>
+        {item.flyer_image_url ? (
+          <Image src={item.flyer_image_url} alt={item.title} fill
+            className="object-cover group-hover:scale-[1.03] transition-transform duration-300"
+            sizes="72px" />
+        ) : (
+          <div className="absolute inset-0 flex items-center justify-center">
+            <span className="text-2xl opacity-40 select-none">{cat?.icon ?? '📌'}</span>
+          </div>
+        )}
+      </div>
+      <div className="flex flex-col flex-1 min-w-0 justify-between py-0.5">
+        <div>
+          <div className="flex items-start justify-between gap-1">
+            <h3 className="text-[13px] font-bold text-[#111111] leading-snug line-clamp-2 flex-1 group-hover:text-[#333] transition-colors">
+              {item.title}
+            </h3>
+            <ArrowRight className="w-3 h-3 text-[#C4C9D4] group-hover:text-[#9CA3AF] shrink-0 mt-0.5" />
+          </div>
+          {reason && <p className="text-[10px] text-[#9CA3AF] mt-0.5 truncate">{reason}</p>}
+        </div>
+        <p className="text-[11px] text-[#9CA3AF] flex items-center gap-1 mt-1.5">
+          {time ? (
+            <><Clock className="w-2.5 h-2.5 shrink-0" /><span>{time}</span></>
+          ) : loc ? (
+            <><MapPin className="w-2.5 h-2.5 shrink-0" /><span className="truncate">{loc}</span></>
+          ) : (
+            <span className="capitalize">{cat?.label ?? item.category}</span>
+          )}
+        </p>
+      </div>
+    </Link>
+  )
+}
+
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 const PAGE_SIZE = 12
@@ -539,10 +669,10 @@ export default function ForYouClient() {
     useInterests()
   const { profile, recordClick } = useTasteProfile()
 
-  const [feed, setFeed]           = useState<ScoredItem[]>([])
-  const [loading, setLoading]     = useState(true)
-  const [filter, setFilter]       = useState<Filter>('all')
-  const [showModal, setShowModal] = useState(false)
+  const [feed, setFeed]                 = useState<ScoredItem[]>([])
+  const [loading, setLoading]           = useState(true)
+  const [filter, setFilter]             = useState<Filter>('all')
+  const [showModal, setShowModal]       = useState(false)
 
   // ── Persistent assistant bar ──────────────────────────────────────────────
   const [assistantMsg, setAssistantMsg] = useState('here\'s something good for you 🐾')
@@ -630,7 +760,19 @@ export default function ForYouClient() {
     let cancelled = false
 
     fetchScoredFeed(ctx, allTags, 40)
-      .then(items => { if (!cancelled) setFeed(items) })
+      .then(items => {
+        if (!cancelled) {
+          setFeed(items)
+          // Derive featured picks using session-seen (skips homepage's top picks)
+          const seen    = getSeenIds()
+          const { top, backups } = pickTopAndBackups(items, seen)
+          // Register featured picks as seen so they don't repeat
+          const featIds: string[] = []
+          if (top) featIds.push(top.item.id)
+          backups.forEach(b => featIds.push(b.item.id))
+          markSeen(featIds)
+        }
+      })
       .catch(() => {})
       .finally(() => { if (!cancelled) setLoading(false) })
 
@@ -789,8 +931,22 @@ export default function ForYouClient() {
     setActiveQuery(null)
   }, [])
 
-  // Apply filter + page window
-  const filtered = useMemo(() => applyFilter(feed, filter), [feed, filter])
+  // Featured section (top pick + backups) — skips items already seen on the homepage
+  const { featuredTop, featuredBackups } = useMemo(() => {
+    const seen = getSeenIds()
+    const { top, backups } = pickTopAndBackups(feed, seen)
+    return { featuredTop: top, featuredBackups: backups }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [feed])
+
+  // Apply filter + page window — exclude featured items to avoid repetition in grid
+  const filtered = useMemo(() => {
+    const featIds = new Set([
+      featuredTop  ? featuredTop.item.id  : null,
+      ...featuredBackups.map(b => b.item.id),
+    ].filter(Boolean) as string[])
+    return applyFilter(feed, filter).filter(s => !featIds.has(s.item.id))
+  }, [feed, filter, featuredTop, featuredBackups])
   const visible  = useMemo(() => filtered.slice(0, visibleCount), [filtered, visibleCount])
   const hasMore  = visibleCount < filtered.length
 
@@ -836,6 +992,31 @@ export default function ForYouClient() {
           onSubmit={handleIntentSubmit}
           onClear={handleIntentClear}
         />
+
+        {/* ── Featured: Top Pick + Backup Picks ───────────────────────────── */}
+        {!intentMode && !loading && featuredTop && (
+          <div className="mb-6">
+            <p className="text-[11px] font-semibold text-[#9CA3AF] uppercase tracking-wide mb-3">
+              Your pick
+            </p>
+            <div className="flex flex-col gap-3">
+              <TopPickCard item={featuredTop.item} reason={featuredTop.reason} onClick={recordClick} />
+              {featuredBackups.length > 0 && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {featuredBackups.map(b => (
+                    <BackupPickCard key={b.item.id} item={b.item} reason={b.reason} onClick={recordClick} />
+                  ))}
+                </div>
+              )}
+            </div>
+            {/* Divider before filter chips + grid */}
+            <div className="mt-6 flex items-center gap-3">
+              <div className="flex-1 h-px bg-[#F3F4F6]" />
+              <span className="text-[11px] font-semibold text-[#C4C9D4] uppercase tracking-wide shrink-0">More picks</span>
+              <div className="flex-1 h-px bg-[#F3F4F6]" />
+            </div>
+          </div>
+        )}
 
         {/* ── Quick filter chips (hidden during intent results) ────────────── */}
         {!intentMode && (
