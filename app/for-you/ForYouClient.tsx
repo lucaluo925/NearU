@@ -34,7 +34,7 @@ import {
   type ScoreContext,
   type ScoredItem,
 } from '@/lib/recommendations'
-import { getSeenIds, markSeen, trackImpression, getOvershownIds, recordDetailView, getViewedIds } from '@/lib/session-seen'
+import { getSeenIds, markSeen, trackImpression, getOvershownIds, getViewedIds } from '@/lib/session-seen'
 import { Item, UC_DAVIS_LAT, UC_DAVIS_LNG } from '@/lib/types'
 import { CATEGORIES } from '@/lib/constants'
 import { formatTime, cn, startOfLADay, endOfLADay } from '@/lib/utils'
@@ -727,13 +727,12 @@ export default function ForYouClient() {
     useInterests()
   const { profile, recordClick } = useTasteProfile()
 
-  // Unified card click handler — records both the taste-profile signal and the
-  // session-level detail-view signal.  The detail-view signal halves the
-  // impression penalty so items the user genuinely clicked through to are not
-  // treated the same as items they scrolled past repeatedly without engaging.
+  // Records the taste-profile signal (category/tag counters for scoring).
+  // The detail-view signal (impression-penalty protection) is recorded by
+  // ViewTracker on the listing page mount — not here — so it only fires on
+  // confirmed page loads, not on optimistic card clicks that may be aborted.
   const handleCardClick = useCallback((item: Item) => {
     recordClick(item)
-    recordDetailView(item.id)
   }, [recordClick])
 
   const [feed, setFeed]                 = useState<ScoredItem[]>([])

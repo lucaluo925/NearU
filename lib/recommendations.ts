@@ -513,7 +513,12 @@ export async function fetchScoredFeed(
     // location — a dramatically better baseline than random recents.
     fetches.push(safeFetch('/api/items?sort=upcoming&limit=30'))
     fetches.push(safeFetch('/api/items?category=events&sort=upcoming&limit=20'))
-    fetches.push(safeFetch('/api/items?sort=top-rated&limit=20'))
+    // Top-rated scoped to a 10 km radius around UC Davis — prevents highly-rated
+    // Sacramento/Bay Area venues (which get a -2 geo penalty in scoring anyway)
+    // from consuming pool slots that local quality content should fill.
+    fetches.push(safeFetch(
+      `/api/items?sort=top-rated&lat=${UC_DAVIS_LAT}&lng=${UC_DAVIS_LNG}&radius=10&limit=20`,
+    ))
     fetches.push(safeFetch(
       `/api/items?lat=${UC_DAVIS_LAT}&lng=${UC_DAVIS_LNG}&radius=2&sort=recent&limit=20`,
     ))

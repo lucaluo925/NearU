@@ -39,7 +39,7 @@ import {
   type ScoreContext,
   type ScoredItem,
 } from '@/lib/recommendations'
-import { getSeenIds, markSeen, trackImpression, getOvershownIds, recordDetailView, getViewedIds } from '@/lib/session-seen'
+import { getSeenIds, markSeen, trackImpression, getOvershownIds, getViewedIds } from '@/lib/session-seen'
 import { Item, UC_DAVIS_LAT, UC_DAVIS_LNG } from '@/lib/types'
 import { CATEGORIES } from '@/lib/constants'
 import { formatTime, cn } from '@/lib/utils'
@@ -949,12 +949,12 @@ export default function HomePersonalization() {
 
   const { profile, recordClick } = useTasteProfile()
 
-  // Records both the taste-profile signal (category/tag counters for future scoring)
-  // and the session detail-view signal (halves impression penalty on this item if
-  // it later appears over-shown).  Passed to all card onClick handlers.
+  // Records the taste-profile signal (category/tag counters for future scoring).
+  // The detail-view signal (impression-penalty protection) is recorded by
+  // ViewTracker on the listing page mount — not here — so it only fires when
+  // the user actually reaches the page, not on optimistic card clicks.
   const handleCardClick = useCallback((item: Item) => {
     recordClick(item)
-    recordDetailView(item.id)
   }, [recordClick])
 
   const [showModal, setShowModal] = useState(false)
