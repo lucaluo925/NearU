@@ -66,7 +66,7 @@ export const CATEGORIES: Category[] = [
   {
     slug: 'campus',
     label: 'Campus',
-    subtitle: 'Campus activities and resources',
+    subtitle: 'Activities, events, and resources',
     icon: '🎓',
     subcategories: [
       { slug: 'student-services', label: 'Student Services' },

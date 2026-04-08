@@ -22,7 +22,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import Link from 'next/link'
 import Image from 'next/image'
-import { Settings2, MapPin, Clock, Sparkles, X, ArrowRight } from 'lucide-react'
+import { Settings2, MapPin, Clock, Sparkles, X, ArrowRight, ChevronRight } from 'lucide-react'
 import dynamic from 'next/dynamic'
 
 import { useInterests }    from '@/hooks/useInterests'
@@ -146,9 +146,10 @@ function PetAssistantBar({
       </p>
       <button
         onClick={onOpenChat}
-        className="shrink-0 text-[11px] font-semibold text-amber-700 hover:text-amber-900 transition-colors whitespace-nowrap mt-0.5"
+        className="inline-flex items-center gap-0.5 shrink-0 text-[11px] font-semibold text-amber-700 hover:text-amber-900 transition-colors whitespace-nowrap mt-0.5"
       >
-        view chat ›
+        view chat
+        <ChevronRight className="w-3 h-3" />
       </button>
     </div>
   )
@@ -596,7 +597,7 @@ export default function HomePersonalization() {
 
   // ── Persistent assistant bar ──────────────────────────────────────────────
   // Never auto-clears — only changes when user interacts or hydrates.
-  const [assistantMsg, setAssistantMsg] = useState('finding picks for you 🐾')
+  const [assistantMsg, setAssistantMsg] = useState('here\'s something good for you 🐾')
   const [chatOpen, setChatOpen]         = useState(false)
   const [chatHistory, setChatHistory]   = useState<ChatMessage[]>([])
 
@@ -747,9 +748,10 @@ export default function HomePersonalization() {
             <h2 className="text-[15px] font-bold text-[#111111] leading-none">For You 🔥</h2>
             <Link
               href="/for-you"
-              className="text-[12px] font-medium text-[#9CA3AF] hover:text-[#374151] transition-colors"
+              className="inline-flex items-center gap-1 text-[12px] font-medium text-[#9CA3AF] hover:text-[#374151] transition-colors"
             >
-              See all <ArrowRight className="w-3 h-3 inline-block" />
+              See all
+              <ArrowRight className="w-3 h-3" />
             </Link>
           </div>
           {interestsHydrated && (

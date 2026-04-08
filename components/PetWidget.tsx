@@ -999,7 +999,8 @@ function PetRecommendation({
           onClick={onClose}
           className="inline-flex items-center gap-1 text-[11px] font-semibold text-amber-600 hover:text-amber-700 transition-colors"
         >
-          Explore recent additions <ArrowRight className="w-3 h-3 inline-block" />
+          Explore recent additions
+          <ArrowRight className="w-3 h-3" />
         </Link>
       </div>
     )
@@ -1218,9 +1219,10 @@ function HatchContent({
       </p>
       <button
         onClick={onDone}
-        className="w-full bg-[#111111] hover:bg-[#333] text-white text-[13px] font-bold rounded-xl py-2.5 transition-colors"
+        className="inline-flex items-center justify-center gap-1.5 w-full bg-[#111111] hover:bg-[#333] text-white text-[13px] font-bold rounded-xl py-2.5 transition-colors"
       >
-        Meet {label} <ArrowRight className="w-3.5 h-3.5 inline-block" />
+        Meet {label}
+        <ArrowRight className="w-3.5 h-3.5" />
       </button>
     </div>
   )
@@ -2194,8 +2196,9 @@ export default function PetWidget() {
                   <p className="text-[9px] text-[#C4C9D4]">{currentPoints} pts available</p>
                   {!needsHatch && (
                     <Link href="/rewards" onClick={() => setOpen(false)}
-                      className="text-[9px] text-amber-400 hover:text-amber-500 transition-colors">
-                      🥚 Buy egg ({EGG_PRICE} pts) <ArrowRight className="w-3 h-3 inline-block" />
+                      className="inline-flex items-center gap-1 text-[9px] text-amber-400 hover:text-amber-500 transition-colors">
+                      🥚 Buy egg ({EGG_PRICE} pts)
+                      <ArrowRight className="w-3 h-3" />
                     </Link>
                   )}
                 </div>

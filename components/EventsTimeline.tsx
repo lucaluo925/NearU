@@ -208,7 +208,7 @@ function EventCount({ count, href }: { count: number; href: string }) {
       href={href}
       className="flex items-center gap-1 text-[12px] font-medium text-[#6B7280] hover:text-[#374151] transition-colors group"
     >
-      <span className="whitespace-nowrap">{count} event{count !== 1 ? 's' : ''}</span>
+      <span className="whitespace-nowrap">{`${count} event${count !== 1 ? 's' : ''}`}</span>
       <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-0.5 transition-transform" />
     </Link>
   )

@@ -44,9 +44,10 @@ export default function RewardsCue() {
       )}
       <Link
         href="/rewards"
-        className="text-[12px] font-semibold text-amber-600 hover:text-amber-700 transition-colors shrink-0"
+        className="inline-flex items-center gap-1 text-[12px] font-semibold text-amber-600 hover:text-amber-700 transition-colors shrink-0"
       >
-        Rewards <ArrowRight className="w-3 h-3 inline-block" />
+        Rewards
+        <ArrowRight className="w-3 h-3" />
       </Link>
     </div>
   )

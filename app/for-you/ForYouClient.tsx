@@ -17,7 +17,7 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import Link from 'next/link'
 import Image from 'next/image'
-import { Settings2, MapPin, Clock, Sparkles, X, ArrowRight } from 'lucide-react'
+import { Settings2, MapPin, Clock, Sparkles, X, ArrowRight, ChevronRight } from 'lucide-react'
 import dynamic from 'next/dynamic'
 
 import { useInterests }    from '@/hooks/useInterests'
@@ -178,9 +178,10 @@ function PetAssistantBar({
       </p>
       <button
         onClick={onOpenChat}
-        className="shrink-0 text-[11px] font-semibold text-amber-700 hover:text-amber-900 transition-colors whitespace-nowrap mt-0.5"
+        className="inline-flex items-center gap-0.5 shrink-0 text-[11px] font-semibold text-amber-700 hover:text-amber-900 transition-colors whitespace-nowrap mt-0.5"
       >
-        view chat ›
+        view chat
+        <ChevronRight className="w-3 h-3" />
       </button>
     </div>
   )
@@ -544,7 +545,7 @@ export default function ForYouClient() {
   const [showModal, setShowModal] = useState(false)
 
   // ── Persistent assistant bar ──────────────────────────────────────────────
-  const [assistantMsg, setAssistantMsg] = useState('finding picks for you 🐾')
+  const [assistantMsg, setAssistantMsg] = useState('here\'s something good for you 🐾')
   const [chatOpen, setChatOpen]         = useState(false)
   const [chatHistory, setChatHistory]   = useState<ChatMessage[]>([])
 
@@ -910,9 +911,10 @@ export default function ForYouClient() {
             <p className="text-[14px] text-[#9CA3AF] mb-2">No results for this filter</p>
             <button
               onClick={() => setFilter('all')}
-              className="text-[12px] font-medium text-[#D97706] hover:text-[#B45309]"
+              className="inline-flex items-center gap-1 text-[12px] font-medium text-[#D97706] hover:text-[#B45309]"
             >
-              Show all <ArrowRight className="w-3 h-3 inline-block" />
+              Show all
+              <ArrowRight className="w-3 h-3" />
             </button>
           </div>
         ) : (
