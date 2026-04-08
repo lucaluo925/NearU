@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServerSupabase } from '@/lib/supabase-server'
+import { getAdminUser } from '@/lib/admin-auth'
 
 /**
  * Comprehensive cleanup: soft-delete ALL non-local events from the database.
@@ -93,7 +94,11 @@ function classifyItem(item: CleanupItem): { keep: boolean; reason?: string } {
 
 // ── Route handler ─────────────────────────────────────────────────────────────
 
-export async function POST(_req: NextRequest) {
+export async function POST(req: NextRequest) {
+  if (!await getAdminUser(req)) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  }
+
   const supabase = getServerSupabase()
   const now      = new Date().toISOString()
   const rejected: RejectedItem[] = []

@@ -1,9 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
+import { getSessionUser } from '@/lib/auth-helper'
 
 const client = new Anthropic()
 
 export async function POST(request: NextRequest) {
+  // Require an authenticated session — this endpoint calls a paid external API
+  // and must not be publicly accessible to prevent cost-abuse.
+  const user = await getSessionUser(request)
+  if (!user) {
+    return NextResponse.json({ error: 'Authentication required' }, { status: 401 })
+  }
+
   const apiKey = process.env.ANTHROPIC_API_KEY
   if (!apiKey) {
     return NextResponse.json({ error: 'AI analysis not configured' }, { status: 503 })
@@ -15,11 +23,26 @@ export async function POST(request: NextRequest) {
 
   try {
     const body = await request.json()
-    imageUrl = body.imageUrl
-    imageBase64 = body.imageBase64
-    mediaType = body.mediaType
+    imageUrl   = typeof body.imageUrl   === 'string' ? body.imageUrl   : undefined
+    imageBase64 = typeof body.imageBase64 === 'string' ? body.imageBase64 : undefined
+    mediaType  = body.mediaType
 
     if (!imageUrl && !imageBase64) throw new Error('Missing imageUrl or imageBase64')
+
+    // Validate imageUrl — only allow https:// URLs to prevent SSRF to internal services
+    if (imageUrl) {
+      try {
+        const parsed = new URL(imageUrl)
+        if (parsed.protocol !== 'https:') throw new Error('only https URLs allowed')
+      } catch {
+        return NextResponse.json({ error: 'Invalid imageUrl' }, { status: 400 })
+      }
+    }
+
+    // Sanity-check base64 length (5 MB raw ≈ ~6.7 MB base64)
+    if (imageBase64 && imageBase64.length > 7_000_000) {
+      return NextResponse.json({ error: 'Image too large' }, { status: 400 })
+    }
   } catch {
     return NextResponse.json({ error: 'Invalid request' }, { status: 400 })
   }

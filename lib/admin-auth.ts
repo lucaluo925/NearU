@@ -8,9 +8,20 @@
 import { createServerClient } from '@supabase/ssr'
 import type { NextRequest } from 'next/server'
 
-/** The one email that may access /admin. Falls back to the hardcoded owner. */
+/**
+ * The one email that may access /admin.
+ * Must be configured via the ADMIN_EMAIL environment variable in production.
+ * Falls back to empty string so admin access is disabled rather than
+ * exposing a hardcoded email address.
+ */
 export const ADMIN_EMAIL =
-  (process.env.ADMIN_EMAIL ?? 'zix7622@163.com').toLowerCase().trim()
+  (process.env.ADMIN_EMAIL ?? '').toLowerCase().trim()
+
+// Warn loudly in server logs if the env var is missing, so it is never
+// silently misconfigured in production.
+if (!process.env.ADMIN_EMAIL) {
+  console.warn('[admin-auth] ADMIN_EMAIL env var is not set — admin access is disabled')
+}
 
 /**
  * Check whether the authenticated user in a NextRequest is the admin.

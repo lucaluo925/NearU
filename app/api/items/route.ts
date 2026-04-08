@@ -81,7 +81,9 @@ export async function GET(request: NextRequest) {
 
   const category     = searchParams.get('category')
   const subcategory  = searchParams.get('subcategory')
-  const search       = searchParams.get('search')
+  // Cap search length to prevent unbounded ilike queries
+  const searchRaw    = searchParams.get('search') ?? ''
+  const search       = searchRaw.slice(0, 200) || null
   const tags         = searchParams.getAll('tag')
   const time         = searchParams.get('time')
   const sort         = searchParams.get('sort') ?? 'upcoming'
