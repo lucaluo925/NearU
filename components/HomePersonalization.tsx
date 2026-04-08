@@ -561,6 +561,10 @@ function TopPickCard({
   const time     = item.start_time ? formatTime(item.start_time) : null
   const loc      = item.location_name ?? item.city ?? ''
 
+  useEffect(() => {
+    track('pick_impression', { slot: 'top', item_id: item.id, category: item.category ?? '' })
+  }, [item.id, item.category])
+
   return (
     <Link
       href={`/listing/${item.id}`}
@@ -649,6 +653,10 @@ function BackupPickCard({
   const gradient = CAT_GRADIENT[item.category] ?? 'from-[#F3F4F6] to-[#E9EAEC]'
   const time     = item.start_time ? formatTime(item.start_time) : null
   const loc      = item.location_name ?? item.city ?? ''
+
+  useEffect(() => {
+    track('pick_impression', { slot: 'backup', item_id: item.id, category: item.category ?? '' })
+  }, [item.id, item.category])
 
   return (
     <Link
