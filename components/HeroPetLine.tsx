@@ -16,7 +16,7 @@ const TASTE_MSGS: Record<string, string> = {
   outdoor:  "you keep drifting to outdoor places 🌿",
   events:   "you've been in an event mood lately 🎉",
   study:    "study spots are your thing lately 📚",
-  shopping: "you've been into shopping lately 🛍️",
+  shopping: "you've been into shopping lately 🛍",
   campus:   "you're very into campus stuff 🎓",
 }
 

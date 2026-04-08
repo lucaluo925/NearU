@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react'
 import Link from 'next/link'
+import { ArrowRight } from 'lucide-react'
 import { usePet } from '@/hooks/usePet'
 import { useToast } from '@/components/Toast'
 import { CATEGORIES } from '@/lib/constants'
@@ -546,7 +547,7 @@ function XpBar({ xp }: { xp: number }) {
     <div>
       <div className="flex items-center justify-between mb-1">
         <span className="text-[10px] text-[#9CA3AF]">{prog.current} / {prog.needed} XP</span>
-        <span className="text-[10px] font-medium text-[#6B7280]">→ Lv.{level + 1}</span>
+        <span className="text-[10px] font-medium text-[#6B7280] flex items-center gap-0.5"><ArrowRight className="w-3 h-3" /> Lv.{level + 1}</span>
       </div>
       <div className="h-[6px] rounded-full bg-[#F3F4F6] overflow-hidden">
         <div
@@ -998,7 +999,7 @@ function PetRecommendation({
           onClick={onClose}
           className="inline-flex items-center gap-1 text-[11px] font-semibold text-amber-600 hover:text-amber-700 transition-colors"
         >
-          Explore recent additions →
+          Explore recent additions <ArrowRight className="w-3 h-3 inline-block" />
         </Link>
       </div>
     )
@@ -1070,7 +1071,7 @@ function PetRecommendation({
         >
           <span className="text-[15px] leading-none shrink-0">{primaryIcon}</span>
           <span className="text-[12px] font-semibold text-[#92400E] group-hover:text-[#7C2D12] transition-colors line-clamp-1 flex-1 min-w-0">{primary.title}</span>
-          <span className="text-[10px] text-amber-400 group-hover:text-amber-600 transition-colors shrink-0">→</span>
+          <ArrowRight className="w-3 h-3 text-amber-400 group-hover:text-amber-600 transition-colors shrink-0" />
         </Link>
         {/* PART 2 — "Why it changed" explanation */}
         {adjustMsg && (
@@ -1113,7 +1114,7 @@ function PetRecommendation({
                 >
                   <span className="text-[15px] leading-none shrink-0">{catIcon}</span>
                   <span className="text-[12px] font-medium text-[#374151] group-hover:text-[#111111] transition-colors line-clamp-1 flex-1 min-w-0">{item.title}</span>
-                  <span className="text-[10px] text-[#C4C9D4] group-hover:text-[#9CA3AF] transition-colors shrink-0">→</span>
+                  <ArrowRight className="w-3 h-3 text-[#C4C9D4] group-hover:text-[#9CA3AF] transition-colors shrink-0" />
                 </Link>
               )
             })}
@@ -1219,7 +1220,7 @@ function HatchContent({
         onClick={onDone}
         className="w-full bg-[#111111] hover:bg-[#333] text-white text-[13px] font-bold rounded-xl py-2.5 transition-colors"
       >
-        Meet {label} →
+        Meet {label} <ArrowRight className="w-3.5 h-3.5 inline-block" />
       </button>
     </div>
   )
@@ -2117,7 +2118,7 @@ export default function PetWidget() {
                 <span className="text-[12px] font-medium text-[#374151] group-hover:text-[#111111] line-clamp-1 flex-1 min-w-0">
                   {modalContext.itemTitle}
                 </span>
-                <span className="text-[10px] text-[#C4C9D4] group-hover:text-[#9CA3AF] shrink-0">→</span>
+                <ArrowRight className="w-3 h-3 text-[#C4C9D4] group-hover:text-[#9CA3AF] shrink-0" />
               </Link>
             </div>
           )}
@@ -2194,7 +2195,7 @@ export default function PetWidget() {
                   {!needsHatch && (
                     <Link href="/rewards" onClick={() => setOpen(false)}
                       className="text-[9px] text-amber-400 hover:text-amber-500 transition-colors">
-                      🥚 Buy egg ({EGG_PRICE} pts) →
+                      🥚 Buy egg ({EGG_PRICE} pts) <ArrowRight className="w-3 h-3 inline-block" />
                     </Link>
                   )}
                 </div>
