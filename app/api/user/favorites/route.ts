@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServerSupabase } from '@/lib/supabase-server'
 import { getSessionUser } from '@/lib/auth-helper'
+import { limiters, getRequestKey, rateLimitResponse } from '@/lib/rate-limit'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -84,6 +85,10 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   const user = await getSessionUser(req)
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+  // Rate limit: 120 per user per minute (rapid save/unsave while browsing)
+  const rl = limiters.favorites.check(getRequestKey(req, user.id))
+  if (rl.limited) return rateLimitResponse(rl.resetIn)
 
   let body: {
     action:          'add' | 'remove' | 'add_collection' | 'remove_collection'

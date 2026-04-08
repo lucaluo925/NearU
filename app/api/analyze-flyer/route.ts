@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
 import { getSessionUser } from '@/lib/auth-helper'
+import { limiters, getRequestKey, rateLimitResponse } from '@/lib/rate-limit'
 
 const client = new Anthropic()
 
@@ -11,6 +12,10 @@ export async function POST(request: NextRequest) {
   if (!user) {
     return NextResponse.json({ error: 'Authentication required' }, { status: 401 })
   }
+
+  // Rate limit: 10 per user per hour (Claude API costs real money)
+  const rl = limiters.analyzeFlyer.check(getRequestKey(request, user.id))
+  if (rl.limited) return rateLimitResponse(rl.resetIn)
 
   const apiKey = process.env.ANTHROPIC_API_KEY
   if (!apiKey) {

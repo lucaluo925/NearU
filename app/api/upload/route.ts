@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServerSupabase } from '@/lib/supabase-server'
 import { getSessionUser } from '@/lib/auth-helper'
+import { limiters, getRequestKey, rateLimitResponse } from '@/lib/rate-limit'
 import crypto from 'crypto'
 
 const MAX_SIZE = 5 * 1024 * 1024 // 5MB
@@ -12,6 +13,10 @@ export async function POST(request: NextRequest) {
   if (!user) {
     return NextResponse.json({ error: 'Authentication required' }, { status: 401 })
   }
+
+  // Rate limit: 30 per user per hour (Storage write, medium cost)
+  const rl = limiters.upload.check(getRequestKey(request, user.id))
+  if (rl.limited) return rateLimitResponse(rl.resetIn)
 
   try {
     const formData = await request.formData()
