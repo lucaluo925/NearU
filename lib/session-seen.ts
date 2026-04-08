@@ -80,6 +80,55 @@ export function resetSeen(): void {
   try { sessionStorage.removeItem(KEY) } catch {}
 }
 
+// ── Detail-view signal (weak positive) ───────────────────────────────────────
+//
+// When a user clicks through to a listing's detail page they have expressed
+// genuine interest — weak positive, not a negative signal.
+//
+// Without this, impression tracking incorrectly penalises items the user
+// opened but didn't save: a detail-view click increments the impression
+// counter and the item ends up penalised as "over-shown", even though the
+// user actually engaged with it.
+//
+// Design:
+//   - IDs stored as a flat array in sessionStorage, newest first.
+//   - recordDetailView() is called on the listing page mount (or card click).
+//   - getViewedIds() returns a Set for O(1) lookup in applyImpressionPenalty.
+//   - applyImpressionPenalty halves the penalty for viewed IDs — the item
+//     still rotates out after persistent ignoring, just more slowly.
+//   - Capped at 200 entries; resets with the session (tab close).
+
+const VIEW_KEY = 'nearu-viewed-v1'
+
+/**
+ * Record that the user opened a listing's detail page.
+ * Idempotent within a session — calling it twice for the same id is a no-op.
+ */
+export function recordDetailView(id: string): void {
+  if (typeof window === 'undefined' || !id) return
+  try {
+    const raw    = sessionStorage.getItem(VIEW_KEY)
+    const ids: string[] = raw
+      ? (JSON.parse(raw) as unknown as string[]).filter(v => typeof v === 'string')
+      : []
+    if (ids.includes(id)) return   // already recorded — no update needed
+    sessionStorage.setItem(VIEW_KEY, JSON.stringify([id, ...ids].slice(0, 200)))
+  } catch {}
+}
+
+/** Returns the set of item IDs the user has opened this session. */
+export function getViewedIds(): Set<string> {
+  if (typeof window === 'undefined') return new Set()
+  try {
+    const raw = sessionStorage.getItem(VIEW_KEY)
+    if (!raw) return new Set()
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed) ? new Set<string>(parsed) : new Set()
+  } catch {
+    return new Set()
+  }
+}
+
 // ── Impression frequency (negative signal) ────────────────────────────────────
 //
 // Tracks how many times each item has been rendered to the user this session.

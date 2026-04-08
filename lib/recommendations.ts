@@ -109,6 +109,12 @@ export interface ScoreContext {
    * new users haven't expressed preferences yet so the boost would be noise.
    */
   totalClicks:    number
+  /**
+   * True when the user has ≤2 total clicks — activates the cold-start
+   * candidate pool (trending, quality, nearby) and a fallback reason label
+   * so new users see a curated, intentional feed rather than random recents.
+   */
+  isColdStart:    boolean
 }
 
 export interface ScoredItem {
@@ -132,6 +138,7 @@ export const EMPTY_CTX: ScoreContext = {
   recentCatSet:  new Set(),
   clickMag:      {},
   totalClicks:   0,
+  isColdStart:   true,
 }
 
 export function buildScoreContext(
@@ -159,6 +166,7 @@ export function buildScoreContext(
     recentCatSet:  new Set((profile.recentCategories ?? []).slice(0, 10)),
     clickMag,
     totalClicks:   profile.totalClicks,
+    isColdStart:   profile.totalClicks <= 2,
   }
 }
 
@@ -222,11 +230,27 @@ export function scoreItem(item: Item, ctx: ScoreContext): number {
 
   if (item.subcategory && ctx.clickedSubTop.has(item.subcategory)) score += 2
 
-  // Tag matching — capped per signal to prevent runaway scores on tag-heavy items
+  // Tag matching — saved tags use diminishing returns; clicked tags stay flat-capped.
+  //
+  // Saved-tag diminishing returns table (index = match count, 0–4+):
+  //   0 matches →  0 pts
+  //   1 match   → +3 pts  (first match worth more than before: was +2)
+  //   2 matches → +5 pts  (+2 incremental)
+  //   3 matches → +6 pts  (+1 incremental)
+  //   4+ matches→ +7 pts  (+1 incremental, then capped)
+  //
+  // Motivation: an item matching 3 saved tags is meaningfully more aligned
+  // than one matching 1.  The old flat-cap (Math.min(n,3)×2) gave the same
+  // score (+6) to both a 3-match and a hypothetical 10-match item, which
+  // discards real preference signal.  Diminishing slope prevents score
+  // inflation on tag-stuffed listings.
+  //
+  // Clicked tags (implicit signal, weaker) stay flat-capped at max +3.
   const savedTagMatches   = tags.filter(t => ctx.savedTagSet.has(t))
   const clickedTagMatches = tags.filter(t => ctx.clickedTagTop.has(t))
-  score += Math.min(savedTagMatches.length,   3) * 2   // max +6
-  score += Math.min(clickedTagMatches.length, 3)       // max +3
+  const ST_BONUS = [0, 3, 5, 6, 7] as const
+  score += ST_BONUS[Math.min(savedTagMatches.length, 4)]
+  score += Math.min(clickedTagMatches.length, 3)   // max +3 — unchanged
 
   // ── Temporal ─────────────────────────────────────────────────────────────────
   if (item.start_time) {
@@ -354,6 +378,13 @@ export function reasonFor(item: Item, ctx: ScoreContext): string | null {
     if (d < 3) return 'just added'
   }
 
+  // ── Cold-start fallback ───────────────────────────────────────────────────────
+  // New users see a generic-but-honest label rather than a blank reason pill.
+  // This only fires when all other signals (temporal, geo, behavioral, quality,
+  // freshness) returned null — i.e. the item has no distinctive hook except
+  // that it made it into the curated cold-start pool.
+  if (ctx.isColdStart) return 'popular in Davis'
+
   return null
 }
 
@@ -445,36 +476,71 @@ export async function fetchScoredFeed(
 ): Promise<ScoredItem[]> {
   const fetches: Promise<Item[]>[] = []
 
-  // 1. Tag-filtered fetch — user's explicit interests (up to 6 tags)
+  // ── 1. Tag-filtered fetch (always first — explicit interests win the dedup race) ──
   if (savedTags.length > 0) {
     const params = new URLSearchParams({ sort: 'recent', limit: '30' })
     savedTags.slice(0, 6).forEach(t => params.append('tag', t))
     fetches.push(safeFetch(`/api/items?${params}`))
   }
 
-  // 2. Recent fetch — catches freshly submitted content regardless of category
-  fetches.push(safeFetch('/api/items?sort=recent&limit=40'))
+  if (ctx.isColdStart) {
+    // ── Cold-start pool ──────────────────────────────────────────────────────────
+    //
+    // For users with ≤2 total clicks there is no reliable behavioral signal.
+    // A plain `sort=recent` pool is effectively random; if a batch of low-quality
+    // content was recently submitted, the new user's first experience is broken.
+    //
+    // Instead, fan out to three curated sources that proxy intent:
+    //
+    //   A. Upcoming (all categories, sorted by start_time) — events and activities
+    //      happening soon are the most actionable content for a student first
+    //      opening the app.  Temporal scoring then correctly rewards items
+    //      starting within hours over items starting next week.
+    //
+    //   B. Upcoming events specifically — ensure events aren't crowded out by food
+    //      or shopping listings that have no start_time and therefore appear at the
+    //      top of sort=upcoming (nulls-first on start_time).
+    //
+    //   C. Top-rated (all categories) — quality is a reliable proxy for relevance
+    //      when we have no behavioral signal.  Highly-reviewed food spots and study
+    //      spaces are almost universally useful for Davis students.
+    //
+    //   D. Near campus (radius 2 km) — proximity is the strongest non-behavioral
+    //      signal for a UC Davis context.  Items within biking distance are almost
+    //      always relevant regardless of preference.
+    //
+    // These four fetches produce ~80–100 unique items covering time, quality, and
+    // location — a dramatically better baseline than random recents.
+    fetches.push(safeFetch('/api/items?sort=upcoming&limit=30'))
+    fetches.push(safeFetch('/api/items?category=events&sort=upcoming&limit=20'))
+    fetches.push(safeFetch('/api/items?sort=top-rated&limit=20'))
+    fetches.push(safeFetch(
+      `/api/items?lat=${UC_DAVIS_LAT}&lng=${UC_DAVIS_LNG}&radius=2&sort=recent&limit=20`,
+    ))
+  } else {
+    // ── Returning-user pool ──────────────────────────────────────────────────────
+    //
+    // User has meaningful behavioral history (>2 clicks).  Fan out to:
+    //   2. Recent (time-ordered) — baseline, catches freshly submitted content
+    //   3. Behavioral-cat fetches (top 2 clicked) — guarantee category presence
+    //      even when recent imports skew the recency pool toward other categories
+    //   4. Discovery fetch — one unexplored category, rotates daily, prevents echo
+    fetches.push(safeFetch('/api/items?sort=recent&limit=40'))
 
-  // 3. Per-category behavioral fetches — explicitly pull the user's top 2
-  //    clicked categories so a skewed recent batch can't crowd them out.
-  //    Capped at 20 items each — enough for scoring diversity without overloading.
-  const topBehavioralCats = [...ctx.clickedCatTop].slice(0, 2)
-  for (const cat of topBehavioralCats) {
-    fetches.push(safeFetch(`/api/items?category=${cat}&sort=recent&limit=20`))
-  }
+    const topBehavioralCats = [...ctx.clickedCatTop].slice(0, 2)
+    for (const cat of topBehavioralCats) {
+      fetches.push(safeFetch(`/api/items?category=${cat}&sort=recent&limit=20`))
+    }
 
-  // 4. Discovery fetch — one under-explored category per session-day.
-  //    Only activates when the user has enough click history to have established
-  //    preferences (>5 clicks).  Uses a stable per-day index so the discovery
-  //    category doesn't flicker on every render but rotates daily.
-  if (ctx.totalClicks > 5) {
-    const unexplored = ALL_CATEGORY_SLUGS.filter(
-      c => !ctx.clickedCatTop.has(c) && !ctx.savedCatSet.has(c),
-    )
-    if (unexplored.length > 0) {
-      const dayIndex = Math.floor(Date.now() / 86_400_000)
-      const discoveryCat = unexplored[dayIndex % unexplored.length]
-      fetches.push(safeFetch(`/api/items?category=${discoveryCat}&sort=recent&limit=15`))
+    if (ctx.totalClicks > 5) {
+      const unexplored = ALL_CATEGORY_SLUGS.filter(
+        c => !ctx.clickedCatTop.has(c) && !ctx.savedCatSet.has(c),
+      )
+      if (unexplored.length > 0) {
+        const dayIndex    = Math.floor(Date.now() / 86_400_000)
+        const discoveryCat = unexplored[dayIndex % unexplored.length]
+        fetches.push(safeFetch(`/api/items?category=${discoveryCat}&sort=recent&limit=15`))
+      }
     }
   }
 
@@ -514,15 +580,47 @@ export async function fetchScoredFeed(
 
 export function pickTopAndBackups(
   scored:     ScoredItem[],
-  seenIds:    Set<string> = new Set(),
-  numBackups: number      = 2,
+  seenIds:    Set<string>  = new Set(),
+  numBackups: number       = 2,
+  ctx?:       ScoreContext,
 ): TopPicks {
+  // ── Dynamic diversity cap ─────────────────────────────────────────────────────
+  //
+  // The diversity reranker normally allows at most 2 items per category in the
+  // featured section.  For users with a very dominant single preference, this
+  // cap fights their taste: if someone spends 80%+ of their time on events and
+  // we only show 2 events, the third slot goes to a category they barely care
+  // about.
+  //
+  // Confidence metric:
+  //   clickMag[cat] = min(count / max(totalClicks × 0.3, 5), 1)
+  //   Full intensity (1.0) = cat count ≥ 30% of all clicks.
+  //   Threshold 0.8 = cat count ≥ ~24% of all clicks at steady state.
+  //
+  //   Example: 50 total clicks, food = 12 → mag = 12 / 15 = 0.80 → cap = 3
+  //            50 total clicks, food = 8  → mag = 8  / 15 = 0.53 → cap = 2
+  //            20 total clicks, food = 5  → mag = 5  / 6  = 0.83 → cap = 3
+  //
+  // Requirements before expanding the cap:
+  //   - ≥10 total clicks: prevents cap expansion from accidental early-session
+  //     category clusters (clicked food 3x in a row ≠ food is dominant)
+  //   - dominantMag ≥ 0.80: only truly dominant categories warrant the extra slot
+  //
+  // The cap never goes above 3 — even extreme food users get one non-food item
+  // visible (the diversity reranker still enforces venue dedup regardless).
+  let maxPerCategory = 2
+  if (ctx && ctx.totalClicks >= 10) {
+    const magValues    = Object.values(ctx.clickMag)
+    const dominantMag  = magValues.length > 0 ? Math.max(...magValues) : 0
+    if (dominantMag >= 0.8) maxPerCategory = 3
+  }
+
   // Pass 1: filter out items shown on other surfaces this session
   const pool = scored.filter(s => !seenIds.has(s.item.id))
   if (pool.length === 0) return { top: null, backups: [] }
 
-  // Pass 2: diversity reranking (max 2 per category, 1 per venue)
-  const reranked = rerankForDiversity(pool, 2, 1)
+  // Pass 2: diversity reranking with dynamic category cap
+  const reranked = rerankForDiversity(pool, maxPerCategory, 1)
 
   const top        = reranked[0]
   const usedCats   = new Set([top.item.category])
@@ -581,14 +679,25 @@ export function pickTopAndBackups(
 export function applyImpressionPenalty(
   scored:       ScoredItem[],
   overshownIds: Set<string>,
-  penalty:      number = 4,
+  viewedIds:    Set<string> = new Set(),
+  penalty:      number      = 4,
 ): ScoredItem[] {
   if (overshownIds.size === 0) return scored
   return scored
-    .map(s =>
-      overshownIds.has(s.item.id)
-        ? { ...s, score: s.score - penalty }
-        : s,
-    )
+    .map(s => {
+      if (!overshownIds.has(s.item.id)) return s
+      // Items the user opened (detail-view click) get half the penalty.
+      //
+      // Without this, an item the user clicked through to but didn't save yet
+      // accumulates impression counts from the card render AND the return visit,
+      // causing it to rotate out of the featured section even though the user
+      // was actively considering it.
+      //
+      // Half-penalty keeps the rotation effect for genuinely ignored items while
+      // protecting items the user engaged with — they still get penalised if shown
+      // many more times, just at a slower rate.
+      const p = viewedIds.has(s.item.id) ? Math.round(penalty / 2) : penalty
+      return { ...s, score: s.score - p }
+    })
     .sort((a, b) => b.score - a.score)
 }

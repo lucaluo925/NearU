@@ -39,7 +39,7 @@ import {
   type ScoreContext,
   type ScoredItem,
 } from '@/lib/recommendations'
-import { getSeenIds, markSeen, trackImpression, getOvershownIds } from '@/lib/session-seen'
+import { getSeenIds, markSeen, trackImpression, getOvershownIds, recordDetailView, getViewedIds } from '@/lib/session-seen'
 import { Item, UC_DAVIS_LAT, UC_DAVIS_LNG } from '@/lib/types'
 import { CATEGORIES } from '@/lib/constants'
 import { formatTime, cn } from '@/lib/utils'
@@ -764,25 +764,26 @@ function ForYouSection({ savedTags, savedCats, ctx, activeChip, recordClick }: F
 
   const { top, backups } = useMemo(() => {
     // Apply impression penalty before chip filter + diversity pass.
-    // Items repeatedly shown in this featured section without a click
-    // get a -4 score penalty so the feed rotates naturally across sessions.
+    // Viewed items (user opened the listing) get half the penalty so genuine
+    // interest isn't punished by repeated-exposure logic.
     const overshown = getOvershownIds(4)
-    const penalised = applyImpressionPenalty(baseScored, overshown)
+    const viewed    = getViewedIds()
+    const penalised = applyImpressionPenalty(baseScored, overshown, viewed)
     const filtered  = applyChipFilter(penalised, activeChip)
     const seenIds   = getSeenIds()
-    return pickTopAndBackups(filtered, seenIds)
-  }, [baseScored, activeChip])
+    // Pass ctx so pickTopAndBackups can compute the dynamic diversity cap
+    return pickTopAndBackups(filtered, seenIds, 2, ctx)
+  }, [baseScored, activeChip, ctx])
 
   // Register shown items so /for-you page's featured section won't repeat them.
-  // Track impressions with first-screen weight (all 3 featured picks are above the fold).
+  // Track impressions with first-screen weight (all featured picks are above the fold).
   useEffect(() => {
     const ids: string[] = []
     if (top) ids.push(top.item.id)
     backups.forEach(b => ids.push(b.item.id))
     if (ids.length > 0) {
       markSeen(ids)
-      // All featured picks are first-screen — weight 2 each
-      trackImpression(ids, ids.length)
+      trackImpression(ids, ids.length)   // all first-screen — weight 2 each
     }
   }, [top, backups])
 
@@ -947,6 +948,14 @@ export default function HomePersonalization() {
   } = useInterests()
 
   const { profile, recordClick } = useTasteProfile()
+
+  // Records both the taste-profile signal (category/tag counters for future scoring)
+  // and the session detail-view signal (halves impression penalty on this item if
+  // it later appears over-shown).  Passed to all card onClick handlers.
+  const handleCardClick = useCallback((item: Item) => {
+    recordClick(item)
+    recordDetailView(item.id)
+  }, [recordClick])
 
   const [showModal, setShowModal] = useState(false)
 
@@ -1182,7 +1191,7 @@ export default function HomePersonalization() {
           <IntentResults
             scored={intentScored}
             onClear={handleIntentClear}
-            recordClick={recordClick}
+            recordClick={handleCardClick}
           />
         ) : (
           <ForYouSection
@@ -1190,7 +1199,7 @@ export default function HomePersonalization() {
             savedCats={interests.categories}
             ctx={ctx}
             activeChip={activeChip}
-            recordClick={recordClick}
+            recordClick={handleCardClick}
           />
         )}
 

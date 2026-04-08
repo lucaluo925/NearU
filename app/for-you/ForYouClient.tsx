@@ -34,7 +34,7 @@ import {
   type ScoreContext,
   type ScoredItem,
 } from '@/lib/recommendations'
-import { getSeenIds, markSeen, trackImpression, getOvershownIds } from '@/lib/session-seen'
+import { getSeenIds, markSeen, trackImpression, getOvershownIds, recordDetailView, getViewedIds } from '@/lib/session-seen'
 import { Item, UC_DAVIS_LAT, UC_DAVIS_LNG } from '@/lib/types'
 import { CATEGORIES } from '@/lib/constants'
 import { formatTime, cn, startOfLADay, endOfLADay } from '@/lib/utils'
@@ -727,6 +727,15 @@ export default function ForYouClient() {
     useInterests()
   const { profile, recordClick } = useTasteProfile()
 
+  // Unified card click handler — records both the taste-profile signal and the
+  // session-level detail-view signal.  The detail-view signal halves the
+  // impression penalty so items the user genuinely clicked through to are not
+  // treated the same as items they scrolled past repeatedly without engaging.
+  const handleCardClick = useCallback((item: Item) => {
+    recordClick(item)
+    recordDetailView(item.id)
+  }, [recordClick])
+
   const [feed, setFeed]                 = useState<ScoredItem[]>([])
   const [loading, setLoading]           = useState(true)
   const [filter, setFilter]             = useState<Filter>('all')
@@ -992,14 +1001,16 @@ export default function ForYouClient() {
   // Featured section (top pick + backups) — skips items already seen on the homepage.
   // Apply impression penalty before pick so repeatedly-shown-but-ignored items
   // are pushed down and the featured section rotates across sessions.
+  // Viewed items get half-penalty; pass ctx for dynamic diversity cap.
   const { featuredTop, featuredBackups } = useMemo(() => {
     const overshown = getOvershownIds(4)
-    const penalised = applyImpressionPenalty(feed, overshown)
+    const viewed    = getViewedIds()
+    const penalised = applyImpressionPenalty(feed, overshown, viewed)
     const seen      = getSeenIds()
-    const { top, backups } = pickTopAndBackups(penalised, seen)
+    const { top, backups } = pickTopAndBackups(penalised, seen, 2, ctx)
     return { featuredTop: top, featuredBackups: backups }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [feed])
+  }, [feed, ctx])
 
   // Track impressions for the featured picks each time they change.
   // Featured picks are always first-screen — all get weight 2.
@@ -1080,11 +1091,11 @@ export default function ForYouClient() {
               Your pick
             </p>
             <div className="flex flex-col gap-3">
-              <TopPickCard item={featuredTop.item} reason={featuredTop.reason} onClick={recordClick} />
+              <TopPickCard item={featuredTop.item} reason={featuredTop.reason} onClick={handleCardClick} />
               {featuredBackups.length > 0 && (
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   {featuredBackups.map(b => (
-                    <BackupPickCard key={b.item.id} item={b.item} reason={b.reason} onClick={recordClick} />
+                    <BackupPickCard key={b.item.id} item={b.item} reason={b.reason} onClick={handleCardClick} />
                   ))}
                 </div>
               )}
@@ -1152,7 +1163,7 @@ export default function ForYouClient() {
               )}
               <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
                 {intentScored.map(({ item, reason }, idx) => (
-                  <div key={item.id} onClick={() => recordClick(item)}>
+                  <div key={item.id} onClick={() => handleCardClick(item)}>
                     <ForYouCard item={item} reason={reason} showBadge={idx < 3} />
                   </div>
                 ))}
@@ -1182,7 +1193,7 @@ export default function ForYouClient() {
           <>
             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
               {visible.map(({ item, reason }, idx) => (
-                <div key={item.id} onClick={() => recordClick(item)}>
+                <div key={item.id} onClick={() => handleCardClick(item)}>
                   <ForYouCard item={item} reason={reason} showBadge={idx < 3} />
                 </div>
               ))}
