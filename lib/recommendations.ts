@@ -103,6 +103,12 @@ export interface ScoreContext {
    * Scales behavioral bonuses: frequently-visited categories earn higher scores.
    */
   clickMag:       Record<string, number>
+  /**
+   * Total click count from profile — used to gate the novelty exploration
+   * boost.  We only nudge discovery when the user has meaningful history;
+   * new users haven't expressed preferences yet so the boost would be noise.
+   */
+  totalClicks:    number
 }
 
 export interface ScoredItem {
@@ -125,6 +131,7 @@ export const EMPTY_CTX: ScoreContext = {
   clickedTagTop: new Set(),
   recentCatSet:  new Set(),
   clickMag:      {},
+  totalClicks:   0,
 }
 
 export function buildScoreContext(
@@ -151,6 +158,7 @@ export function buildScoreContext(
     clickedTagTop: new Set(topNKeys(profile.tagCounts, 10)),
     recentCatSet:  new Set((profile.recentCategories ?? []).slice(0, 10)),
     clickMag,
+    totalClicks:   profile.totalClicks,
   }
 }
 
@@ -258,6 +266,29 @@ export function scoreItem(item: Item, ctx: ScoreContext): number {
   if      (rating >= 4.5 && reviews >= 5) score += 3
   else if (rating >= 4.0 && reviews >= 3) score += 1
   if (!item.flyer_image_url && !item.avg_rating) score -= 2
+
+  // ── Novelty / exploration ────────────────────────────────────────────────────
+  //
+  // Give a small lift to items in categories the user has never clicked.
+  // This prevents the feed from becoming a pure echo chamber once a user has
+  // established preferences — a chill/study user occasionally sees events, etc.
+  //
+  // Conditions before applying:
+  //   1. User has meaningful click history (>5) — avoids noise at onboarding.
+  //   2. Category was never clicked (mag === 0 and not in clickedCatTop).
+  //   3. Category is not an explicit saved interest (that's a different signal).
+  //
+  // The +2 lift is intentionally small: just enough to bubble up one or two
+  // unexplored items when their base scores are close to in-preference items.
+  // Strong behavioral signals (+7 max) still dominate.
+  if (
+    ctx.totalClicks > 5 &&
+    mag === 0 &&
+    !ctx.clickedCatTop.has(item.category) &&
+    !ctx.savedCatSet.has(item.category)
+  ) {
+    score += 2
+  }
 
   return score
 }
@@ -372,25 +403,93 @@ export function rerankForDiversity(
 //
 // Used by both the homepage section and the /for-you page.
 // Always returns results — falls back to recents when no interest data.
+//
+// Candidate pool diversity strategy (v3)
+// ───────────────────────────────────────
+// The old approach (tag-filtered + recent) was vulnerable to pool concentration:
+// if a batch of food items was recently imported, they dominated the 60-item pool
+// before scoring ran, so scoring + diversity-reranking couldn't fix the skew.
+//
+// Now we fan out into parallel per-category fetches, guaranteeing cross-category
+// representation in the candidate pool regardless of what was recently imported:
+//
+//   1. Tag-filtered fetch  — user's explicit saved interests (strongest signal)
+//   2. Recent fetch        — time-ordered fallback (catches new content quickly)
+//   3. Behavioral-cat fetches (×2) — user's top 2 clicked categories explicitly
+//                            fetched so they're never crowded out by batch imports
+//   4. Discovery fetch     — ONE unexplored category (not in user's top-3 or saved
+//                            interests) to prevent echo-chamber lock-in
+//
+// All batches are merged with a dedup pass (first-seen wins to preserve priority
+// order), then scored and ranked.  The scorer + rerankForDiversity handle the
+// final ordering.
+
+/** Fetch items from the API, returning [] on any network or status error. */
+async function safeFetch(url: string): Promise<Item[]> {
+  try {
+    const res = await fetch(url)
+    if (!res.ok) return []
+    return res.json() as Promise<Item[]>
+  } catch {
+    return []
+  }
+}
+
+/** All known category slugs — used for discovery fetch selection. */
+const ALL_CATEGORY_SLUGS = ['events', 'food', 'outdoor', 'study', 'shopping', 'campus'] as const
 
 export async function fetchScoredFeed(
   ctx:       ScoreContext,
   savedTags: string[],
   limit:     number = 20,
 ): Promise<ScoredItem[]> {
-  const params = new URLSearchParams({ sort: 'recent', limit: '60' })
-  savedTags.slice(0, 6).forEach(t => params.append('tag', t))
+  const fetches: Promise<Item[]>[] = []
 
-  const [tagRes, recentRes] = await Promise.all([
-    savedTags.length > 0 ? fetch(`/api/items?${params}`) : Promise.resolve(null),
-    fetch('/api/items?sort=recent&limit=60'),
-  ])
+  // 1. Tag-filtered fetch — user's explicit interests (up to 6 tags)
+  if (savedTags.length > 0) {
+    const params = new URLSearchParams({ sort: 'recent', limit: '30' })
+    savedTags.slice(0, 6).forEach(t => params.append('tag', t))
+    fetches.push(safeFetch(`/api/items?${params}`))
+  }
 
-  const tagItems:    Item[] = tagRes?.ok   ? await tagRes.json()    : []
-  const recentItems: Item[] = recentRes.ok ? await recentRes.json() : []
+  // 2. Recent fetch — catches freshly submitted content regardless of category
+  fetches.push(safeFetch('/api/items?sort=recent&limit=40'))
 
-  const seen = new Set(tagItems.map(i => i.id))
-  const all  = [...tagItems, ...recentItems.filter(i => !seen.has(i.id))]
+  // 3. Per-category behavioral fetches — explicitly pull the user's top 2
+  //    clicked categories so a skewed recent batch can't crowd them out.
+  //    Capped at 20 items each — enough for scoring diversity without overloading.
+  const topBehavioralCats = [...ctx.clickedCatTop].slice(0, 2)
+  for (const cat of topBehavioralCats) {
+    fetches.push(safeFetch(`/api/items?category=${cat}&sort=recent&limit=20`))
+  }
+
+  // 4. Discovery fetch — one under-explored category per session-day.
+  //    Only activates when the user has enough click history to have established
+  //    preferences (>5 clicks).  Uses a stable per-day index so the discovery
+  //    category doesn't flicker on every render but rotates daily.
+  if (ctx.totalClicks > 5) {
+    const unexplored = ALL_CATEGORY_SLUGS.filter(
+      c => !ctx.clickedCatTop.has(c) && !ctx.savedCatSet.has(c),
+    )
+    if (unexplored.length > 0) {
+      const dayIndex = Math.floor(Date.now() / 86_400_000)
+      const discoveryCat = unexplored[dayIndex % unexplored.length]
+      fetches.push(safeFetch(`/api/items?category=${discoveryCat}&sort=recent&limit=15`))
+    }
+  }
+
+  // Merge all batches — first-seen wins (preserves priority order across batches)
+  const batches = await Promise.all(fetches)
+  const seenIds = new Set<string>()
+  const all: Item[] = []
+  for (const batch of batches) {
+    for (const item of batch) {
+      if (!seenIds.has(item.id)) {
+        seenIds.add(item.id)
+        all.push(item)
+      }
+    }
+  }
 
   return all
     .map(item => ({
@@ -460,4 +559,36 @@ export function pickTopAndBackups(
   }
 
   return { top, backups: backups.slice(0, numBackups) }
+}
+
+// ── Impression-frequency penalty ─────────────────────────────────────────────
+//
+// Items the user has seen multiple times without clicking are over-shown.
+// Applying a score penalty pushes them down the ranking so the feed
+// refreshes naturally rather than surfacing the same high-scoring items
+// every time the user returns to the page.
+//
+// Usage:
+//   const overshown = getOvershownIds(3)   // from lib/session-seen
+//   const penalised = applyImpressionPenalty(scored, overshown)
+//   // then pass penalised into pickTopAndBackups / rerankForDiversity
+//
+// Penalty of 4 is calibrated to be:
+//   - Large enough to displace items below most behaviorally-matched content
+//   - Small enough that a genuinely high-rated or imminent item still surfaces
+//     even if it was previously shown (e.g. an event starting in 30m scores +6)
+
+export function applyImpressionPenalty(
+  scored:       ScoredItem[],
+  overshownIds: Set<string>,
+  penalty:      number = 4,
+): ScoredItem[] {
+  if (overshownIds.size === 0) return scored
+  return scored
+    .map(s =>
+      overshownIds.has(s.item.id)
+        ? { ...s, score: s.score - penalty }
+        : s,
+    )
+    .sort((a, b) => b.score - a.score)
 }
