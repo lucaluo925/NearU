@@ -28,6 +28,12 @@ export interface TasteProfile {
   tagCounts:         Record<string, number>
   totalClicks:       number
   lastUpdated:       number
+  /**
+   * Rolling window of the last 10 clicked category slugs, newest first.
+   * Used by the recommendation scorer as a recency signal — detects taste
+   * shifts faster than aggregate click counts.
+   */
+  recentCategories:  string[]
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
@@ -39,6 +45,7 @@ function empty(): TasteProfile {
     tagCounts:         {},
     totalClicks:       0,
     lastUpdated:       Date.now(),
+    recentCategories:  [],
   }
 }
 
@@ -54,6 +61,10 @@ function loadProfile(): TasteProfile {
       tagCounts:         p.tagCounts         ?? {},
       totalClicks:       p.totalClicks       ?? 0,
       lastUpdated:       p.lastUpdated       ?? Date.now(),
+      // Backward-compat: old profiles stored without recentCategories load as []
+      recentCategories:  Array.isArray(p.recentCategories)
+        ? (p.recentCategories as unknown[]).filter((v): v is string => typeof v === 'string')
+        : [],
     }
   } catch {
     return empty()
@@ -124,6 +135,10 @@ export function useTasteProfile() {
       const t = tag.toLowerCase()
       p.tagCounts[t] = (p.tagCounts[t] ?? 0) + 1
     }
+
+    // Rolling window of last 10 clicked categories (newest first).
+    // Prepend the current category; trim to 10 to keep the array bounded.
+    p.recentCategories = [item.category, ...(p.recentCategories ?? [])].slice(0, 10)
 
     p.totalClicks  = Math.min((p.totalClicks ?? 0) + 1, MAX_CLICKS)
     p.lastUpdated  = Date.now()

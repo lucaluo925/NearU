@@ -29,6 +29,7 @@ import {
   reasonFor,
   fetchScoredFeed,
   pickTopAndBackups,
+  haversineKm,
   type ScoreContext,
   type ScoredItem,
 } from '@/lib/recommendations'
@@ -126,40 +127,96 @@ const CAT_GRADIENT: Record<string, string> = {
 }
 
 // ── Intent scoring helpers ────────────────────────────────────────────────────
+//
+// intentBoost v2 — mirrors HomePersonalization for consistency.
+// Vibe alignment now dominates behavioral preference via a two-tier bonus:
+//   • each matching vibe tag: +4
+//   • two or more matches:    +8 extra  (total far exceeds typical behavioral score)
+// This ensures "chill" results win over a food-biased base score.
 
 function intentBoost(item: Item, intent: ParsedIntent): number {
-  let boost = 0
-  const itemTags = (item.tags ?? []).map(t => t.toLowerCase())
-  if (intent.categories.includes(item.category))                    boost += 5
-  boost += itemTags.filter(t => intent.tags.includes(t)).length * 3
+  let boost  = 0
+  const tags = (item.tags ?? []).map(t => t.toLowerCase())
+  const now  = Date.now()
+
+  // Vibe alignment
+  if (intent.vibes.length > 0) {
+    const vibeTagHits = intent.tags.filter(t => tags.includes(t)).length
+    boost += vibeTagHits * 4
+    if (vibeTagHits >= 2) boost += 8   // strong alignment bonus
+  } else {
+    boost += tags.filter(t => intent.tags.includes(t)).length * 3
+  }
+
+  // Explicit category
+  if (intent.categories.includes(item.category)) boost += 8
+
+  // Temporal precision
   if (intent.time === 'today' && item.start_time) {
-    const h = (new Date(item.start_time).getTime() - Date.now()) / 3_600_000
-    if (h > 0 && h < 24) boost += 4
+    const h = (new Date(item.start_time).getTime() - now) / 3_600_000
+    if (h > 0 && h <= 3)       boost += 8
+    else if (h > 0 && h <= 12) boost += 5
+    else if (h > 0 && h <= 24) boost += 3
   } else if (intent.time === 'tomorrow' && item.start_time) {
-    const h = (new Date(item.start_time).getTime() - Date.now()) / 3_600_000
+    const h = (new Date(item.start_time).getTime() - now) / 3_600_000
     if (h >= 24 && h < 48) boost += 4
   }
+
+  // Free items
+  if (intent.budget === 'free' && tags.includes('free')) boost += 5
+
   return boost
 }
 
+// intentReason v2: specific and data-driven, not generic checkbox labels
 function intentReason(item: Item, intent: ParsedIntent): string | null {
-  const itemTags = (item.tags ?? []).map(t => t.toLowerCase())
-  if (intent.vibes.includes('chill') && itemTags.some(t => ['outdoor', 'quiet', 'coffee', 'cafe', 'study-spot'].includes(t)))
-    return 'Chill vibes ✓'
-  if (intent.vibes.includes('social') && itemTags.some(t => ['social-party', 'live-music', 'student-friendly'].includes(t)))
-    return 'Social vibes ✓'
-  if (intent.vibes.includes('outdoorsy') && item.category === 'outdoor')
-    return 'Outdoor ✓'
-  if (intent.budget === 'free' && itemTags.includes('free'))
-    return 'Free to attend'
+  const tags = (item.tags ?? []).map(t => t.toLowerCase())
+  const now  = Date.now()
+
+  // Time-specific (most actionable)
   if (intent.time === 'today' && item.start_time) {
-    const h = (new Date(item.start_time).getTime() - Date.now()) / 3_600_000
-    if (h > 0 && h < 24) return 'Happening tonight'
-  } else if (intent.time === 'tomorrow' && item.start_time) {
-    return 'Happening tomorrow'
+    const h = (new Date(item.start_time).getTime() - now) / 3_600_000
+    if (h > 0 && h <= 3) {
+      return `starts in ${Math.round(h * 60)}m`
+    }
+    if (h > 0 && h <= 24) {
+      const d = new Date(item.start_time)
+      const hr = d.getHours(); const mn = d.getMinutes()
+      const ampm = hr >= 12 ? 'pm' : 'am'
+      const h12  = hr % 12 || 12
+      const time = mn === 0 ? `${h12}${ampm}` : `${h12}:${String(mn).padStart(2,'0')}${ampm}`
+      return `tonight · ${time}`
+    }
   }
-  if (intent.region === 'on-campus') return 'Near campus'
-  if (intent.categories.includes(item.category)) return 'Matches what you asked'
+  if (intent.time === 'tomorrow' && item.start_time) return 'happening tomorrow'
+
+  // Free signal
+  if (intent.budget === 'free' && tags.includes('free')) return 'free to attend'
+
+  // Campus proximity
+  if (intent.region === 'on-campus') {
+    if (item.latitude != null && item.longitude != null) {
+      const km = haversineKm(UC_DAVIS_LAT, UC_DAVIS_LNG, item.latitude, item.longitude)
+      if (km < 0.5) return 'on campus'
+      if (km < 1.5) return 'close to campus'
+    }
+    if (tags.includes('on-campus')) return 'on campus'
+    return 'near campus'
+  }
+
+  // Vibe matches
+  if (intent.vibes.includes('chill') && tags.some(t => ['outdoor', 'quiet', 'coffee', 'cafe', 'study-spot', 'park'].includes(t)))
+    return 'chill spot'
+  if (intent.vibes.includes('social') && tags.some(t => ['social-party', 'live-music', 'student-friendly'].includes(t)))
+    return 'social scene'
+  if (intent.vibes.includes('outdoorsy') && item.category === 'outdoor')
+    return 'outdoor spot'
+  if (intent.vibes.includes('cozy') && tags.some(t => ['cafe', 'coffee', 'quiet'].includes(t)))
+    return 'cozy spot'
+
+  // Category match
+  if (intent.categories.includes(item.category)) return 'matches what you asked'
+
   return null
 }
 
@@ -899,7 +956,7 @@ export default function ForYouClient() {
       const assistantChatMsg: ChatMessage = {
         role:   'assistant',
         text:   responseText,
-        items:  scored.slice(0, 3).map(s => ({
+        items:  scored.slice(0, 2).map(s => ({
           id:              s.item.id,
           title:           s.item.title,
           category:        s.item.category,

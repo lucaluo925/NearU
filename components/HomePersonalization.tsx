@@ -34,6 +34,7 @@ import {
   reasonFor,
   fetchScoredFeed,
   pickTopAndBackups,
+  haversineKm,
   type ScoreContext,
   type ScoredItem,
 } from '@/lib/recommendations'
@@ -48,77 +49,152 @@ const InterestsOnboarding = dynamic(
 )
 
 // ── Intent scoring helpers ────────────────────────────────────────────────────
+//
+// intentBoost v2: vibe alignment now dominates behavioral preference when
+// the user's intent is strong.  Two or more vibe-tag matches unlock a +8
+// alignment bonus that reliably overrides a food/events behavioral advantage.
 
 function intentBoost(item: Item, intent: ParsedIntent): number {
-  let boost = 0
-  const itemTags = (item.tags ?? []).map(t => t.toLowerCase())
-  if (intent.categories.includes(item.category))                     boost += 5
-  boost += itemTags.filter(t => intent.tags.includes(t)).length * 3
-  if (intent.time === 'today' && item.start_time) {
-    const h = (new Date(item.start_time).getTime() - Date.now()) / 3_600_000
-    if (h > 0 && h < 24) boost += 4
+  let boost    = 0
+  const tags   = (item.tags ?? []).map(t => t.toLowerCase())
+  const now    = Date.now()
+
+  // Vibe alignment: each matching tag adds +4; two+ matching tags adds an
+  // extra +8 bonus to ensure vibe-heavy intent overrides behavioral category.
+  if (intent.vibes.length > 0) {
+    const vibeTagHits = intent.tags.filter(t => tags.includes(t)).length
+    boost += vibeTagHits * 4
+    if (vibeTagHits >= 2) boost += 8   // strong alignment bonus
+  } else {
+    // No vibes — standard tag boost for non-vibe tag matches
+    boost += tags.filter(t => intent.tags.includes(t)).length * 3
   }
+
+  // Explicit category: strongest intent signal
+  if (intent.categories.includes(item.category)) boost += 8   // up from +5
+
+  // Temporal — imminent events score highest, not just "today"
+  if (intent.time === 'today' && item.start_time) {
+    const h = (new Date(item.start_time).getTime() - now) / 3_600_000
+    if (h > 0 && h <= 3)  boost += 8   // starting very soon
+    else if (h > 0 && h <= 12) boost += 5
+    else if (h > 0 && h <= 24) boost += 3
+  }
+
+  // Free items when budget=free signal
+  if (intent.budget === 'free' && tags.includes('free')) boost += 5
+
   return boost
 }
 
+// intentReason v2: specific about what matched rather than generic labels
 function intentReason(item: Item, intent: ParsedIntent): string | null {
-  const itemTags = (item.tags ?? []).map(t => t.toLowerCase())
-  if (intent.vibes.includes('chill') && itemTags.some(t => ['outdoor', 'quiet', 'coffee', 'cafe', 'study-spot'].includes(t)))
-    return 'Chill vibes ✓'
-  if (intent.vibes.includes('social') && itemTags.some(t => ['social-party', 'live-music', 'student-friendly'].includes(t)))
-    return 'Social vibes ✓'
-  if (intent.vibes.includes('outdoorsy') && item.category === 'outdoor')
-    return 'Outdoor ✓'
-  if (intent.budget === 'free' && itemTags.includes('free'))
-    return 'Free to attend'
+  const tags = (item.tags ?? []).map(t => t.toLowerCase())
+  const now  = Date.now()
+
+  // Time-specific (most actionable)
   if (intent.time === 'today' && item.start_time) {
-    const h = (new Date(item.start_time).getTime() - Date.now()) / 3_600_000
-    if (h > 0 && h < 24) return 'Happening tonight'
+    const h = (new Date(item.start_time).getTime() - now) / 3_600_000
+    if (h > 0 && h <= 3) {
+      const mins = Math.round(h * 60)
+      return `starts in ${mins}m`
+    }
+    if (h > 0 && h <= 24) {
+      const d = new Date(item.start_time)
+      const hr = d.getHours(); const mn = d.getMinutes()
+      const ampm = hr >= 12 ? 'pm' : 'am'
+      const h12  = hr % 12 || 12
+      const time = mn === 0 ? `${h12}${ampm}` : `${h12}:${String(mn).padStart(2,'0')}${ampm}`
+      return `tonight · ${time}`
+    }
   }
-  if (intent.region === 'on-campus') return 'Near campus'
-  if (intent.categories.includes(item.category)) return 'Matches what you asked'
+
+  // Free — high-value signal for students
+  if (intent.budget === 'free' && tags.includes('free')) return 'free to attend'
+
+  // Campus proximity
+  if (intent.region === 'on-campus') {
+    if (item.latitude != null && item.longitude != null) {
+      const km = haversineKm(UC_DAVIS_LAT, UC_DAVIS_LNG, item.latitude, item.longitude)
+      if (km < 0.5) return 'on campus'
+      if (km < 1.5) return 'close to campus'
+    }
+    if (tags.includes('on-campus')) return 'on campus'
+    return 'near campus'
+  }
+
+  // Vibe matches — specific tag rather than generic label
+  if (intent.vibes.includes('chill') && tags.some(t => ['outdoor', 'quiet', 'coffee', 'cafe', 'study-spot', 'park'].includes(t)))
+    return 'chill spot'
+  if (intent.vibes.includes('social') && tags.some(t => ['social-party', 'live-music', 'student-friendly'].includes(t)))
+    return 'social scene'
+  if (intent.vibes.includes('outdoorsy') && item.category === 'outdoor')
+    return 'outdoor spot'
+  if (intent.vibes.includes('cozy') && tags.some(t => ['cafe', 'coffee', 'quiet'].includes(t)))
+    return 'cozy spot'
+
+  // Category match
+  if (intent.categories.includes(item.category)) return 'matches what you asked'
+
   return null
 }
 
 // ── Chip filter ───────────────────────────────────────────────────────────────
 //
-// Quick-filter chips that boost scoring in-place rather than navigate away.
-// Clicking a chip re-scores the cached feed and immediately updates the top picks.
+// Chips now FILTER the candidate pool instead of adding a small score bonus.
+// This makes each chip produce a meaningfully different set of recommendations,
+// not just a slightly reshuffled version of the same list.
+//
+// Algorithm:
+//   1. Partition scored feed into matching / non-matching items.
+//   2. Sort each partition by base score (personalisation preserved within filter).
+//   3. Return matching items first — non-matching items follow as fallback.
+//   4. If < 3 matching items exist, the fallback items fill the display gracefully.
+//
+// Contrast with the old applyChipBoost approach:
+//   Old: add +10–12 to matching items → food-heavy user (base +10-12) still
+//        beats campus items (+10 chip) because scores overlap.
+//   New: matching items are always presented first regardless of base score,
+//        so "Near campus" always shows campus items as the top picks.
 
 export type ChipFilter = 'tonight' | 'food' | 'chill' | 'campus' | null
 
-function applyChipBoost(scored: ScoredItem[], chip: ChipFilter): ScoredItem[] {
+function applyChipFilter(scored: ScoredItem[], chip: ChipFilter): ScoredItem[] {
   if (!chip) return scored
-  return scored
-    .map(s => {
-      const tags = (s.item.tags ?? []).map(t => t.toLowerCase())
-      let bonus  = 0
-      switch (chip) {
-        case 'tonight':
-          if (s.item.start_time) {
-            const h = (new Date(s.item.start_time).getTime() - Date.now()) / 3_600_000
-            if (h > 0 && h < 24) bonus = 12
-          }
-          break
-        case 'food':
-          if (s.item.category === 'food') bonus = 10
-          break
-        case 'chill':
-          if (
-            s.item.category === 'outdoor' ||
-            tags.some(t => ['outdoor', 'quiet', 'cafe', 'coffee', 'study-spot'].includes(t))
-          ) bonus = 10
-          break
-        case 'campus':
-          if (
-            s.item.category === 'campus' ||
-            tags.some(t => ['on-campus', 'near-campus', 'student-friendly'].includes(t))
-          ) bonus = 10
-          break
+  const now = Date.now()
+
+  function matchesChip(s: ScoredItem): boolean {
+    const tags = (s.item.tags ?? []).map(t => t.toLowerCase())
+    switch (chip) {
+      case 'tonight': {
+        if (!s.item.start_time) return false
+        const h = (new Date(s.item.start_time).getTime() - now) / 3_600_000
+        return h > 0 && h < 24
       }
-      return bonus > 0 ? { ...s, score: s.score + bonus } : s
-    })
-    .sort((a, b) => b.score - a.score)
+      case 'food':
+        return s.item.category === 'food'
+      case 'chill':
+        return (
+          s.item.category === 'outdoor' ||
+          s.item.category === 'study' ||
+          tags.some(t => ['outdoor', 'quiet', 'cafe', 'coffee', 'study-spot', 'park', 'peaceful', 'scenic'].includes(t))
+        )
+      case 'campus':
+        return (
+          s.item.category === 'campus' ||
+          tags.some(t => ['on-campus', 'near-campus', 'student-friendly', 'ucd'].includes(t)) ||
+          (s.item.latitude != null && s.item.longitude != null &&
+           haversineKm(UC_DAVIS_LAT, UC_DAVIS_LNG, s.item.latitude, s.item.longitude) < 1.5)
+        )
+    }
+  }
+
+  const matching    = scored.filter(s =>  matchesChip(s)).sort((a, b) => b.score - a.score)
+  const nonMatching = scored.filter(s => !matchesChip(s)).sort((a, b) => b.score - a.score)
+
+  // Matching items always come first — non-matching items act as a graceful
+  // fallback so the section never appears empty (e.g. no tonight events).
+  return [...matching, ...nonMatching]
 }
 
 // ── Chat memory ───────────────────────────────────────────────────────────────
@@ -684,9 +760,9 @@ function ForYouSection({ savedTags, savedCats, ctx, activeChip, recordClick }: F
   }, [savedTags.join(','), savedCats.join(',')])
 
   const { top, backups } = useMemo(() => {
-    const boosted  = applyChipBoost(baseScored, activeChip)
+    const filtered = applyChipFilter(baseScored, activeChip)
     const seenIds  = getSeenIds()
-    return pickTopAndBackups(boosted, seenIds)
+    return pickTopAndBackups(filtered, seenIds)
   }, [baseScored, activeChip])
 
   // Register shown items so /for-you page's featured section won't repeat them
@@ -978,10 +1054,10 @@ export default function HomePersonalization() {
       // Update persistent assistant bar — no timer, stays until next interaction
       setAssistantMsg(msg)
 
-      // Save to localStorage chat history with top-3 items
+      // Save to localStorage chat history with top-2 items (focused, not overwhelming)
       const chatMsg: ChatMessage = {
         text:  msg,
-        items: scored.slice(0, 3).map(s => ({
+        items: scored.slice(0, 2).map(s => ({
           id:              s.item.id,
           title:           s.item.title,
           category:        s.item.category,

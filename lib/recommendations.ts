@@ -7,12 +7,77 @@
  * Used by:
  *   - components/HomePersonalization.tsx  (homepage For You section)
  *   - app/for-you/ForYouClient.tsx        (/for-you page)
+ *
+ * Scoring model v2 — key improvements over v1
+ * ────────────────────────────────────────────
+ * 1. Click-magnitude scaling: behavioral bonuses scale with click intensity
+ *    (how dominant a category is in the user's history), not just presence
+ *    in the top-3.  A category clicked 2 times gives a weaker signal than one
+ *    clicked 20 times.
+ *
+ * 2. Recency window (recentCatSet): categories from the user's last 10 clicks
+ *    get an extra +3 bonus, letting taste shifts surface within the same
+ *    session rather than waiting for aggregate counts to catch up.
+ *
+ * 3. Temporal precision: imminently starting events (+6) are now sharply
+ *    favoured over "sometime this week" (+1), and past events are penalised
+ *    (-8) so stale content never surfaces.
+ *
+ * 4. Geo scoring: haversineKm() measures distance from UC Davis.  Items
+ *    within walking distance (+3) or biking distance (+2) score higher.
+ *    Very distant items (>50 km) are penalised.
+ *
+ * 5. Staleness penalty: listings with no start_time older than 14+ days
+ *    get a -1/-2 penalty so the feed doesn't surface stale evergreen content.
+ *
+ * 6. Richer quality signal: avg_rating × review_count gate (+3 for ≥4.5★
+ *    with ≥5 reviews, vs a flat +1 in v1).
+ *
+ * 7. rerankForDiversity(): post-score pass that enforces category and venue
+ *    diversity in the top results, so the feed doesn't feel like a wall of
+ *    the same type/place.
+ *
+ * 8. Specific reasonFor() labels: "starts in 12m", "on campus", "4.8★ · 14
+ *    reviews", "you've been exploring this" — informative rather than generic.
  */
 
-import type { Item }          from '@/lib/types'
-import type { TasteProfile }  from '@/hooks/useTasteProfile'
+import type { Item }           from '@/lib/types'
+import type { TasteProfile }   from '@/hooks/useTasteProfile'
 import type { InterestsStore } from '@/hooks/useInterests'
-import { topNKeys }           from '@/hooks/useTasteProfile'
+import { topNKeys }            from '@/hooks/useTasteProfile'
+import { UC_DAVIS_LAT, UC_DAVIS_LNG } from '@/lib/types'
+
+// ── Geo helper ────────────────────────────────────────────────────────────────
+//
+// Haversine great-circle distance in kilometres.
+// Exported so chip-filter helpers in components can reuse without duplicating.
+
+export function haversineKm(
+  lat1: number, lng1: number,
+  lat2: number, lng2: number,
+): number {
+  const R    = 6371
+  const dLat = (lat2 - lat1) * (Math.PI / 180)
+  const dLng = (lng2 - lng1) * (Math.PI / 180)
+  const a    = Math.sin(dLat / 2) ** 2
+             + Math.cos(lat1 * (Math.PI / 180))
+             * Math.cos(lat2 * (Math.PI / 180))
+             * Math.sin(dLng / 2) ** 2
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+}
+
+// ── Internal time formatter ───────────────────────────────────────────────────
+
+function fmtHour(iso: string): string {
+  const d    = new Date(iso)
+  const h    = d.getHours()
+  const m    = d.getMinutes()
+  const ampm = h >= 12 ? 'pm' : 'am'
+  const h12  = h % 12 || 12
+  return m === 0
+    ? `${h12}${ampm}`
+    : `${h12}:${String(m).padStart(2, '0')}${ampm}`
+}
 
 // ── Score context ─────────────────────────────────────────────────────────────
 
@@ -21,12 +86,23 @@ export interface ScoreContext {
   savedTagSet:    Set<string>
   /** Categories the user explicitly saved */
   savedCatSet:    Set<string>
-  /** Top-3 categories by click count */
+  /** Top-3 categories by all-time click count */
   clickedCatTop:  Set<string>
-  /** Top-3 subcategories by click count */
+  /** Top-3 subcategories by all-time click count */
   clickedSubTop:  Set<string>
-  /** Top-10 tags by click count */
+  /** Top-10 tags by all-time click count */
   clickedTagTop:  Set<string>
+  /**
+   * Categories in the user's last 10 clicks (recency window).
+   * Detects taste shifts faster than aggregate top-3.
+   */
+  recentCatSet:   Set<string>
+  /**
+   * Per-category click intensity, normalised to 0–1.
+   * Full intensity (1.0) when a category = ≥30% of all clicks.
+   * Scales behavioral bonuses: frequently-visited categories earn higher scores.
+   */
+  clickMag:       Record<string, number>
 }
 
 export interface ScoredItem {
@@ -47,12 +123,23 @@ export const EMPTY_CTX: ScoreContext = {
   clickedCatTop: new Set(),
   clickedSubTop: new Set(),
   clickedTagTop: new Set(),
+  recentCatSet:  new Set(),
+  clickMag:      {},
 }
 
 export function buildScoreContext(
   interests: InterestsStore,
   profile:   TasteProfile,
 ): ScoreContext {
+  // Normalise click magnitude per category (0–1).
+  // Threshold: 30% of total clicks = full intensity (1.0).
+  // Example: food clicked 15/50 times → 15/(50×0.3) = 1.0 (capped).
+  const totalClicks = Math.max(profile.totalClicks, 1)
+  const clickMag: Record<string, number> = {}
+  for (const [cat, count] of Object.entries(profile.categoryCounts)) {
+    clickMag[cat] = Math.min(count / Math.max(totalClicks * 0.3, 5), 1)
+  }
+
   return {
     savedTagSet:   new Set(
       [...interests.cuisines, ...interests.vibes, ...interests.prices]
@@ -62,58 +149,114 @@ export function buildScoreContext(
     clickedCatTop: new Set(topNKeys(profile.categoryCounts, 3)),
     clickedSubTop: new Set(topNKeys(profile.subcategoryCounts, 3)),
     clickedTagTop: new Set(topNKeys(profile.tagCounts, 10)),
+    recentCatSet:  new Set((profile.recentCategories ?? []).slice(0, 10)),
+    clickMag,
   }
 }
 
 // ── Multi-signal scorer ───────────────────────────────────────────────────────
 //
-//  Behavioural (strongest — user told us or repeatedly chose):
-//    +4  saved favourite category
-//    +3  frequently-clicked category  (top-3 from history)
-//    +2  frequently-clicked subcategory
-//    +2  per matching saved interest tag
-//    +1  per matching clicked tag
+//  Behavioural (strongest signals — explicit preference or repeated behavior):
+//    +4–7  saved favourite category    (base +4, scales to +7 at full click-mag)
+//    +3–5  frequently-clicked category (base +3, scales to +5 at full click-mag)
+//    +3    category in recency window  (last 10 clicks — captures taste shifts)
+//    +2    frequently-clicked subcategory
+//    +2×N  matching saved tag          (capped at 3 tags → max +6)
+//    +1×N  matching clicked tag        (capped at 3 tags → max +3)
 //
-//  Temporal relevance:
-//    +3  happening today  (< 24 h away)
-//    +1  happening this week
+//  Temporal:
+//    +6    start_time within next 3 h  (imminent — maximum urgency)
+//    +4    start_time within 3–12 h    (today, afternoon/evening)
+//    +2    start_time within 12–24 h   (tonight)
+//    +1    start_time within 7 days    (this week)
+//    −3    ended < 3 h ago             (just missed; still context-useful)
+//    −8    ended ≥ 3 h ago             (stale past event; suppress strongly)
 //
-//  Content freshness:
-//    +2  created < 3 days ago
-//    +1  created < 7 days ago
+//  Geo:
+//    +2    campus category or on-campus/near-campus tag
+//    +3    within 0.5 km of UC Davis   (walking distance)
+//    +2    within 2 km of UC Davis     (biking distance)
+//    +1    within 5 km of UC Davis     (in Davis)
+//    −2    >50 km from UC Davis        (Sacramento/Bay Area — less relevant)
+//
+//  Freshness / staleness:
+//    +2    created < 3 days ago
+//    +1    created < 7 days ago
+//    −1    created > 14 days AND no start_time (stale evergreen listing)
+//    −2    created > 30 days AND no start_time (very stale listing)
 //
 //  Quality:
-//    +1  avg_rating ≥ 4.0
-//   −2  no image AND no rating  (low-quality listing)
+//    +3    avg_rating ≥ 4.5 AND review_count ≥ 5 (high-quality with social proof)
+//    +1    avg_rating ≥ 4.0 AND review_count ≥ 3
+//    −2    no image AND no rating (low-quality placeholder listing)
 
 export function scoreItem(item: Item, ctx: ScoreContext): number {
-  let score = 0
+  let score    = 0
+  const tags   = (item.tags ?? []).map(t => t.toLowerCase())
+  const now    = Date.now()
 
-  // ── Behavioural ──────────────────────────────────────────────────────────
-  if (ctx.savedCatSet.has(item.category))                             score += 4
-  if (ctx.clickedCatTop.has(item.category))                          score += 3
-  if (item.subcategory && ctx.clickedSubTop.has(item.subcategory))   score += 2
+  // ── Behavioural ──────────────────────────────────────────────────────────────
+  const mag = ctx.clickMag[item.category] ?? 0
 
-  const itemTags = (item.tags ?? []).map(t => t.toLowerCase())
-  score += itemTags.filter(t => ctx.savedTagSet.has(t)).length * 2
-  score += itemTags.filter(t => ctx.clickedTagTop.has(t)).length
+  if (ctx.savedCatSet.has(item.category)) {
+    // Explicit preference: base +4, up to +7 when click-magnitude confirms it.
+    // Magnitude bonus prevents onboarding selections that were never revisited
+    // from scoring the same as genuinely active preferences.
+    score += 4 + Math.round(mag * 3)
+  } else if (ctx.clickedCatTop.has(item.category)) {
+    // Implicit preference: base +3, up to +5.
+    score += 3 + Math.round(mag * 2)
+  }
 
-  // ── Temporal ─────────────────────────────────────────────────────────────
+  // Recency: category clicked in the last 10 sessions → active current interest.
+  // This lets "you switched to events this week" surface before aggregate counts catch up.
+  if (ctx.recentCatSet.has(item.category)) score += 3
+
+  if (item.subcategory && ctx.clickedSubTop.has(item.subcategory)) score += 2
+
+  // Tag matching — capped per signal to prevent runaway scores on tag-heavy items
+  const savedTagMatches   = tags.filter(t => ctx.savedTagSet.has(t))
+  const clickedTagMatches = tags.filter(t => ctx.clickedTagTop.has(t))
+  score += Math.min(savedTagMatches.length,   3) * 2   // max +6
+  score += Math.min(clickedTagMatches.length, 3)       // max +3
+
+  // ── Temporal ─────────────────────────────────────────────────────────────────
   if (item.start_time) {
-    const h = (new Date(item.start_time).getTime() - Date.now()) / 3_600_000
-    if (h > 0 && h < 24)         score += 3
-    else if (h >= 24 && h < 168) score += 1
+    const h = (new Date(item.start_time).getTime() - now) / 3_600_000
+    if      (h > 0  && h <= 3)    score += 6   // starting imminently
+    else if (h > 0  && h <= 12)   score += 4   // later today
+    else if (h > 0  && h <= 24)   score += 2   // tonight
+    else if (h > 0  && h <= 168)  score += 1   // this week
+    else if (h < 0  && h > -3)    score -= 3   // just ended (may still be relevant)
+    else if (h <= -3)              score -= 8   // stale past event — suppress strongly
   }
 
-  // ── Freshness ────────────────────────────────────────────────────────────
+  // ── Geo / campus proximity ───────────────────────────────────────────────────
+  if (item.category === 'campus') score += 2
+  if (tags.some(t => t === 'on-campus' || t === 'near-campus')) score += 2
+
+  if (item.latitude != null && item.longitude != null) {
+    const km = haversineKm(UC_DAVIS_LAT, UC_DAVIS_LNG, item.latitude, item.longitude)
+    if      (km <  0.5) score += 3   // walking distance from campus
+    else if (km <  2)   score += 2   // biking distance (typical Davis range)
+    else if (km <  5)   score += 1   // in Davis
+    else if (km > 50)   score -= 2   // Sacramento / Bay Area — low relevance
+  }
+
+  // ── Freshness / staleness ────────────────────────────────────────────────────
   if (item.created_at) {
-    const d = (Date.now() - new Date(item.created_at).getTime()) / 86_400_000
-    if (d < 3) score += 2
-    else if (d < 7) score += 1
+    const d = (now - new Date(item.created_at).getTime()) / 86_400_000
+    if      (d < 3)                          score += 2
+    else if (d < 7)                          score += 1
+    else if (d > 30 && !item.start_time)     score -= 2
+    else if (d > 14 && !item.start_time)     score -= 1
   }
 
-  // ── Quality ──────────────────────────────────────────────────────────────
-  if ((item.avg_rating ?? 0) >= 4)               score += 1
+  // ── Quality ──────────────────────────────────────────────────────────────────
+  const rating  = item.avg_rating   ?? 0
+  const reviews = item.review_count ?? 0
+  if      (rating >= 4.5 && reviews >= 5) score += 3
+  else if (rating >= 4.0 && reviews >= 3) score += 1
   if (!item.flyer_image_url && !item.avg_rating) score -= 2
 
   return score
@@ -121,39 +264,108 @@ export function scoreItem(item: Item, ctx: ScoreContext): number {
 
 // ── "Why this is for you" label ───────────────────────────────────────────────
 //
-// Short pill-style labels — designed to be rendered as a small badge on cards.
-// Intentionally terse and opinionated rather than long or generic.
+// Concise, data-driven labels — specific enough to feel informative,
+// short enough to fit in a single pill.
+//
+// Priority order:
+//   1. Temporal  — most actionable: "starts in 12m", "today · 7pm"
+//   2. Geo       — location-specific: "on campus", "close to campus"
+//   3. Behaviour — personalised: "you've been exploring this", "4.8★ · 12 reviews"
+//   4. Freshness — "just added" as a last resort
 
 export function reasonFor(item: Item, ctx: ScoreContext): string | null {
-  const itemTags = (item.tags ?? []).map(t => t.toLowerCase())
+  const tags = (item.tags ?? []).map(t => t.toLowerCase())
+  const now  = Date.now()
 
-  if (ctx.savedCatSet.has(item.category))        return 'matches your taste'
-  if (ctx.clickedCatTop.has(item.category))       return "you're into this"
-  if (item.subcategory && ctx.clickedSubTop.has(item.subcategory))
-                                                   return 'your kind of vibe'
-
-  const savedTag = itemTags.find(t => ctx.savedTagSet.has(t))
-  if (savedTag) return `fits your "${savedTag.replace(/-/g, ' ')}" vibe`
-
-  if (itemTags.some(t => ctx.clickedTagTop.has(t)))
-                                                   return "you'd probably like this"
-
+  // ── Temporal ─────────────────────────────────────────────────────────────────
   if (item.start_time) {
-    const h = (new Date(item.start_time).getTime() - Date.now()) / 3_600_000
-    if (h > 0 && h < 10)   return 'happening tonight'
-    if (h >= 10 && h < 24) return 'happening today'
-    if (h >= 24 && h < 48) return 'happening tomorrow'
+    const h = (new Date(item.start_time).getTime() - now) / 3_600_000
+    if (h > 0 && h <= 1)  return `starts in ${Math.round(h * 60)}m`
+    if (h > 0 && h <= 6)  return `starts soon · ${fmtHour(item.start_time)}`
+    if (h > 0 && h <= 24) return `today · ${fmtHour(item.start_time)}`
+    if (h > 0 && h <= 48) return 'happening tomorrow'
   }
 
-  if ((item.avg_rating ?? 0) >= 4 && (item.review_count ?? 0) >= 3)
-                                                   return 'highly rated'
+  // ── Geo ───────────────────────────────────────────────────────────────────────
+  if (item.latitude != null && item.longitude != null) {
+    const km = haversineKm(UC_DAVIS_LAT, UC_DAVIS_LNG, item.latitude, item.longitude)
+    if (km < 0.5) return 'on campus'
+    if (km < 2)   return 'close to campus'
+  }
+  if (tags.includes('on-campus'))   return 'on campus'
+  if (tags.includes('near-campus')) return 'close to campus'
 
+  // ── Behavioural ───────────────────────────────────────────────────────────────
+  if (ctx.savedCatSet.has(item.category)) {
+    const savedTag = tags.find(t => ctx.savedTagSet.has(t))
+    if (savedTag) return 'similar to what you saved'
+    return 'matches your taste'
+  }
+
+  if (ctx.recentCatSet.has(item.category)) return "you've been exploring this"
+  if (ctx.clickedCatTop.has(item.category)) return "you're into this"
+  if (item.subcategory && ctx.clickedSubTop.has(item.subcategory)) return 'your kind of vibe'
+
+  const savedTag = tags.find(t => ctx.savedTagSet.has(t))
+  if (savedTag) return `saved: ${savedTag.replace(/-/g, ' ')}`
+
+  if (tags.some(t => ctx.clickedTagTop.has(t))) return "you'd probably like this"
+
+  // ── Quality ───────────────────────────────────────────────────────────────────
+  const rating  = item.avg_rating   ?? 0
+  const reviews = item.review_count ?? 0
+  if (rating >= 4.5 && reviews >= 5) return `${rating.toFixed(1)}★ · ${reviews} reviews`
+  if (rating >= 4.0 && reviews >= 3) return `${rating.toFixed(1)}★ rated`
+
+  // ── Freshness ─────────────────────────────────────────────────────────────────
   if (item.created_at) {
-    const d = (Date.now() - new Date(item.created_at).getTime()) / 86_400_000
+    const d = (now - new Date(item.created_at).getTime()) / 86_400_000
     if (d < 3) return 'just added'
   }
 
   return null
+}
+
+// ── Diversity reranker ────────────────────────────────────────────────────────
+//
+// Post-score pass that prevents the top of the feed from feeling like a wall
+// of the same category or the same venue.
+//
+// Algorithm:
+//   Walk score-sorted input.  Accept an item if its category count is below
+//   maxPerCategory AND its venue (location_name) hasn't been seen yet.
+//   Defer rejected items to an overflow queue appended after the diverse set.
+//
+//   Score ordering is preserved within each acceptance group — personalisation
+//   is not sacrificed, just gently constrained.
+
+export function rerankForDiversity(
+  scored:         ScoredItem[],
+  maxPerCategory: number = 2,
+  maxPerVenue:    number = 1,
+): ScoredItem[] {
+  const catCounts: Record<string, number> = {}
+  const venuesSeen = new Set<string>()
+  const result:    ScoredItem[] = []
+  const overflow:  ScoredItem[] = []
+
+  for (const s of scored) {
+    const cat   = s.item.category
+    const venue = s.item.location_name?.toLowerCase().trim()
+
+    const catCount = catCounts[cat] ?? 0
+    const venueOk  = !venue || !venuesSeen.has(venue)
+
+    if (catCount < maxPerCategory && venueOk) {
+      result.push(s)
+      catCounts[cat] = catCount + 1
+      if (venue) venuesSeen.add(venue)
+    } else {
+      overflow.push(s)
+    }
+  }
+
+  return [...result, ...overflow]
 }
 
 // ── Feed fetcher (shared async logic) ────────────────────────────────────────
@@ -194,45 +406,57 @@ export async function fetchScoredFeed(
 //
 // Produces a hierarchy: 1 Top Pick + up to `numBackups` Backup Picks.
 //
-// Rules applied in order:
-//  1. Skip items whose IDs are in `seenIds` (cross-surface deduplication)
-//  2. Pick the highest-scoring item as the Top Pick (no restrictions)
-//  3. For Backup Picks: prefer items from different categories than the Top Pick
-//     to avoid a wall of same-type items. Falls back to same-category if the
-//     feed has no variety.
-//
-// This is a client-side reranking pass — it runs fast and never touches the DB.
+// Three-pass algorithm:
+//   Pass 1 — Remove session-seen items (cross-surface deduplication).
+//   Pass 2 — Diversity reranking: prevent category/venue clusters at the top.
+//   Pass 3 — Pick highest-scoring as Top Pick; fill backups preferring
+//             different categories AND different venues.  Falls back to
+//             same-category/venue if the feed lacks variety.
 
 export function pickTopAndBackups(
   scored:     ScoredItem[],
   seenIds:    Set<string> = new Set(),
   numBackups: number      = 2,
 ): TopPicks {
+  // Pass 1: filter out items shown on other surfaces this session
   const pool = scored.filter(s => !seenIds.has(s.item.id))
   if (pool.length === 0) return { top: null, backups: [] }
 
-  const top = pool[0]
+  // Pass 2: diversity reranking (max 2 per category, 1 per venue)
+  const reranked = rerankForDiversity(pool, 2, 1)
 
-  // Prefer backups from different categories for visual diversity
+  const top        = reranked[0]
   const usedCats   = new Set([top.item.category])
-  const backups:   ScoredItem[] = []
-  const sameCatQ:  ScoredItem[] = []
+  const usedVenues = new Set(
+    top.item.location_name ? [top.item.location_name.toLowerCase().trim()] : [],
+  )
 
-  for (const s of pool.slice(1)) {
-    if (backups.length + sameCatQ.length >= numBackups * 4) break  // early exit
-    if (!usedCats.has(s.item.category)) {
+  // Pass 3: fill backups with category + venue diversity
+  const backups:  ScoredItem[] = []
+  const sameCatQ: ScoredItem[] = []   // overflow for same-category items
+
+  for (const s of reranked.slice(1)) {
+    if (backups.length >= numBackups) break
+    const venue   = s.item.location_name?.toLowerCase().trim()
+    const venueOk = !venue || !usedVenues.has(venue)
+
+    if (!usedCats.has(s.item.category) && venueOk) {
       backups.push(s)
       usedCats.add(s.item.category)
+      if (venue) usedVenues.add(venue)
     } else {
       sameCatQ.push(s)
     }
-    if (backups.length >= numBackups) break
   }
 
-  // Fill remaining slots from same-category overflow
+  // Fill remaining slots from same-category overflow (venue dedup still applied)
   for (const s of sameCatQ) {
     if (backups.length >= numBackups) break
-    backups.push(s)
+    const venue = s.item.location_name?.toLowerCase().trim()
+    if (!venue || !usedVenues.has(venue)) {
+      backups.push(s)
+      if (venue) usedVenues.add(venue)
+    }
   }
 
   return { top, backups: backups.slice(0, numBackups) }
