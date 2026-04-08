@@ -186,6 +186,8 @@ function applyChipFilter(scored: ScoredItem[], chip: ChipFilter): ScoredItem[] {
           (s.item.latitude != null && s.item.longitude != null &&
            haversineKm(UC_DAVIS_LAT, UC_DAVIS_LNG, s.item.latitude, s.item.longitude) < 1.5)
         )
+      default:
+        return false
     }
   }
 
