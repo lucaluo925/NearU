@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServerSupabase } from '@/lib/supabase-server'
 import { getSessionUser } from '@/lib/auth-helper'
-import { limiters, getRequestKey, rateLimitResponse } from '@/lib/rate-limit'
+import { limiters, getRequestKey, rateLimitResponse, guardBodySize } from '@/lib/rate-limit'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -85,6 +85,10 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   const user = await getSessionUser(req)
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+  // Body size guard: action + item_id + collection_name — 8 KB is far above any real payload
+  const sizeErr = guardBodySize(req, 8192)
+  if (sizeErr) return sizeErr
 
   // Rate limit: 120 per user per minute (rapid save/unsave while browsing)
   const rl = limiters.favorites.check(getRequestKey(req, user.id))

@@ -1,12 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServerSupabase } from '@/lib/supabase-server'
 import { isTableMissing } from '@/lib/db-errors'
-import { limiters, getRequestKey, rateLimitResponse } from '@/lib/rate-limit'
+import { limiters, getRequestKey, rateLimitResponse, guardBodySize } from '@/lib/rate-limit'
 
 // UUID v4 format check — item_id must be a valid UUID
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
 export async function POST(req: NextRequest) {
+  // Body size guard: interactions payload is tiny (item_id UUID + type enum)
+  const sizeErr = guardBodySize(req, 512)
+  if (sizeErr) return sizeErr
+
   // Rate limit by IP (public endpoint — no auth, silent 200 on exceed)
   const rl = limiters.interactions.check(getRequestKey(req))
   if (rl.limited) return rateLimitResponse(rl.resetIn, /* silent */ true)

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServerSupabase } from '@/lib/supabase-server'
 import { getSessionUser } from '@/lib/auth-helper'
-import { limiters, getRequestKey, rateLimitResponse } from '@/lib/rate-limit'
+import { limiters, getRequestKey, rateLimitResponse, guardBodySize } from '@/lib/rate-limit'
 import { PET_XP_REWARDS, computeLevel, computeMood } from '@/lib/pet'
 
 // ── POST /api/pet/xp — award XP for an action ────────────────────────────────
@@ -12,6 +12,10 @@ import { PET_XP_REWARDS, computeLevel, computeMood } from '@/lib/pet'
 export async function POST(req: NextRequest) {
   const user = await getSessionUser(req)
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+  // Body size guard: payload is just { action: string } — 1 KB is generous
+  const sizeErr = guardBodySize(req, 1024)
+  if (sizeErr) return sizeErr
 
   // Rate limit: 60 per user per minute (one XP call per user action)
   const rl = limiters.petXp.check(getRequestKey(req, user.id))

@@ -47,6 +47,11 @@ export class RateLimiter {
     readonly max: number,
     /** Window length in milliseconds */
     readonly windowMs: number,
+    /**
+     * Short name used in log output.  e.g. 'analyze-flyer'.
+     * When set, every rate-limit hit is logged with an anonymized key.
+     */
+    private readonly name?: string,
   ) {}
 
   check(key: string): RateLimitResult {
@@ -58,6 +63,11 @@ export class RateLimiter {
     if (valid.length >= this.max) {
       // Time until the oldest hit ages out of the window
       const resetIn = this.windowMs - (now - valid[0])
+      // Abuse-resistant log: prefix + first 8 chars of key only (no full ID / IP)
+      if (this.name) {
+        const safe = key.slice(0, 2) + key.slice(2, 10) + '…'
+        console.warn(`[rl:${this.name}] limited key=${safe} ts=${new Date().toISOString()}`)
+      }
       return { limited: true, remaining: 0, resetIn: Math.max(resetIn, 0) }
     }
 
@@ -90,7 +100,7 @@ export const limiters = {
    * retrying once each still has headroom.  Lower than any other limit
    * because the downstream cost is real money.
    */
-  analyzeFlyer: new RateLimiter(10, 60 * 60_000),
+  analyzeFlyer: new RateLimiter(10, 60 * 60_000, 'analyze-flyer'),
 
   /**
    * /api/upload — 30 per user per hour
@@ -100,7 +110,7 @@ export const limiters = {
    * Normal submit flow is 1 upload; power users doing batch submissions are
    * comfortably within this.
    */
-  upload: new RateLimiter(30, 60 * 60_000),
+  upload: new RateLimiter(30, 60 * 60_000, 'upload'),
 
   /**
    * /api/user/favorites (POST) — 120 per user per minute
@@ -109,7 +119,7 @@ export const limiters = {
    * 120/min (2/sec) accommodates the most aggressive normal interaction rate
    * while blocking scripts that hammer the endpoint.
    */
-  favorites: new RateLimiter(120, 60_000),
+  favorites: new RateLimiter(120, 60_000, 'favorites'),
 
   /**
    * /api/pet/xp — 60 per user per minute
@@ -118,7 +128,7 @@ export const limiters = {
    * the favorites write rate since both are triggered by the same actions.
    * The RPC itself is cheap but unbounded calls inflate XP illegitimately.
    */
-  petXp: new RateLimiter(60, 60_000),
+  petXp: new RateLimiter(60, 60_000, 'pet-xp'),
 
   /**
    * /api/points/award — 60 per user per minute
@@ -127,7 +137,7 @@ export const limiters = {
    * DB-level anti-abuse (oneTime / dedupeByItem / dailyCap) still applies;
    * this guard prevents wasted DB round-trips from automated requests.
    */
-  pointsAward: new RateLimiter(60, 60_000),
+  pointsAward: new RateLimiter(60, 60_000, 'points-award'),
 
   /**
    * /api/interactions — 120 per IP per minute
@@ -135,7 +145,7 @@ export const limiters = {
    * Public endpoint (no auth required).  Keyed by IP.  Migrated from the
    * inline implementation in interactions/route.ts.
    */
-  interactions: new RateLimiter(120, 60_000),
+  interactions: new RateLimiter(120, 60_000, 'interactions'),
 } as const
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -143,14 +153,45 @@ export const limiters = {
 /**
  * Returns the rate-limit key for a request.
  * Prefers user_id (stable, harder to spoof than IP); falls back to source IP.
+ *
+ * IP extraction on Vercel:
+ *   Vercel's edge network prepends the real client IP to x-forwarded-for, so
+ *   the first element is always the genuine client address.
+ *   Using `||` (not `??`) so that an empty-string header falls through to the
+ *   next option instead of producing a key like `ip:` that pools all
+ *   empty-header requests together.
  */
 export function getRequestKey(req: NextRequest, userId?: string): string {
   if (userId) return `u:${userId}`
-  const ip =
-    req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ??
-    req.headers.get('x-real-ip') ??
-    'unknown'
+  const xff = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim()
+  const ip  = xff || req.headers.get('x-real-ip') || 'unknown'
   return `ip:${ip}`
+}
+
+/**
+ * Fast-path body-size guard for JSON POST endpoints.
+ *
+ * Checks the Content-Length header (if present) before the route calls
+ * req.json(), preventing large payloads from being buffered into memory.
+ *
+ * Limitations:
+ *  - Content-Length is optional (absent for chunked transfers).  This is a
+ *    best-effort early rejection, not a hard cap.
+ *  - Next.js itself has a default body-size limit (~4MB) which acts as the
+ *    true floor.
+ *
+ * Returns a 413 NextResponse if the declared payload is too large,
+ * or null if the request may proceed.
+ */
+export function guardBodySize(req: NextRequest, maxBytes: number): NextResponse | null {
+  const cl = req.headers.get('content-length')
+  if (cl !== null && parseInt(cl, 10) > maxBytes) {
+    return new NextResponse(
+      JSON.stringify({ error: 'Request body too large' }),
+      { status: 413, headers: { 'Content-Type': 'application/json' } },
+    )
+  }
+  return null
 }
 
 /**

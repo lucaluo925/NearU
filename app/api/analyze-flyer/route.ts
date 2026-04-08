@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
 import { getSessionUser } from '@/lib/auth-helper'
-import { limiters, getRequestKey, rateLimitResponse } from '@/lib/rate-limit'
+import { limiters, getRequestKey, rateLimitResponse, guardBodySize } from '@/lib/rate-limit'
 
 const client = new Anthropic()
 
@@ -12,6 +12,10 @@ export async function POST(request: NextRequest) {
   if (!user) {
     return NextResponse.json({ error: 'Authentication required' }, { status: 401 })
   }
+
+  // Body size guard: base64 image can be up to ~7MB; cap at 8MB before buffering
+  const sizeErr = guardBodySize(request, 8_000_000)
+  if (sizeErr) return sizeErr
 
   // Rate limit: 10 per user per hour (Claude API costs real money)
   const rl = limiters.analyzeFlyer.check(getRequestKey(request, user.id))

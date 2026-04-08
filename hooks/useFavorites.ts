@@ -92,10 +92,20 @@ function lsSave(store: FavoritesStore) {
 }
 
 // ── Retry-safe fire-and-forget POST ──────────────────────────────────────────
-// Does not block the UI. On failure, retries once after 1 s.
+// Does not block the UI.  On network failure, retries once after 1 s.
+// Does NOT retry on 429 (rate limited) or 401 (unauthenticated) — retrying
+// those would either consume another rate-limit slot or always fail again.
 
 function safePost(fn: () => Promise<Response>): void {
-  fn().catch(() => setTimeout(() => fn().catch(() => {}), 1_000))
+  fn().then(r => {
+    // 429 / 401 are expected; no retry — avoid burning rate-limit slots
+    if (r.status === 429 || r.status === 401) return
+    // Any other non-ok response on first attempt → retry once after 1 s
+    if (!r.ok) setTimeout(() => fn().catch(() => {}), 1_000)
+  }).catch(() => {
+    // Network error (no response at all) → retry once after 1 s
+    setTimeout(() => fn().catch(() => {}), 1_000)
+  })
 }
 
 // ── Server API helpers ────────────────────────────────────────────────────────

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServerSupabase } from '@/lib/supabase-server'
 import { getSessionUser } from '@/lib/auth-helper'
-import { limiters, getRequestKey, rateLimitResponse } from '@/lib/rate-limit'
+import { limiters, getRequestKey, rateLimitResponse, guardBodySize } from '@/lib/rate-limit'
 import { POINT_RULES } from '@/lib/points'
 
 // ── POST /api/points/award ────────────────────────────────────────────────────
@@ -23,6 +23,10 @@ function utcDayStart(): string {
 export async function POST(req: NextRequest) {
   const user = await getSessionUser(req)
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+  // Body size guard: { type, metadata } — 4 KB cap covers any legitimate metadata
+  const sizeErr = guardBodySize(req, 4096)
+  if (sizeErr) return sizeErr
 
   // Rate limit: 60 per user per minute (prevents wasted DB round-trips)
   const rl = limiters.pointsAward.check(getRequestKey(req, user.id))
