@@ -7,13 +7,11 @@ interface CategoryCardProps {
   index: number
 }
 
-export default function CategoryCard({ category, index }: CategoryCardProps) {
+export default function CategoryCard({ category, index: _index }: CategoryCardProps) {
   return (
     <Link
       href={`/${category.slug}`}
-      className={`group block bg-white rounded-2xl border border-[#E5E7EB] p-6 shadow-sm
-        hover:shadow-md hover:-translate-y-0.5 transition-all duration-200 ease-out
-        animate-fade-up animate-fade-up-delay-${Math.min(index + 1, 6)}`}
+      className="group block bg-white rounded-2xl border border-[#E5E7EB] p-6 shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all duration-200 ease-out"
       style={{ minHeight: '120px' }}
     >
       <div className="flex items-start justify-between h-full">

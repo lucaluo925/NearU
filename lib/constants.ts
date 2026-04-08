@@ -55,7 +55,7 @@ export const CATEGORIES: Category[] = [
     slug: 'shopping',
     label: 'Shopping',
     subtitle: 'Local stores and markets',
-    icon: '🛍️',
+    icon: '🛍',
     subcategories: [
       { slug: 'grocery', label: 'Grocery' },
       { slug: 'fashion', label: 'Fashion' },

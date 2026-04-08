@@ -1,7 +1,7 @@
 'use client'
 
-import { useState, useEffect } from 'react'
-import { useRouter, useSearchParams } from 'next/navigation'
+import { useState, useEffect, useRef } from 'react'
+import { useRouter } from 'next/navigation'
 import { Loader2, Mail, Lock, User, CheckCircle2 } from 'lucide-react'
 import { createBrowserSupabase } from '@/lib/supabase-browser'
 import { cn } from '@/lib/utils'
@@ -10,11 +10,11 @@ type Mode = 'signin' | 'signup'
 
 export default function LoginClient() {
   const router = useRouter()
-  const searchParams = useSearchParams()
-  const from = searchParams.get('from') ?? '/admin'
-  const initialMode = searchParams.get('mode') === 'signup' ? 'signup' : 'signin'
 
-  const [mode, setMode] = useState<Mode>(initialMode)
+  // Read URL params from window.location on mount — avoids useSearchParams()
+  // which requires a Suspense boundary and defers the entire form to the client.
+  const [from, setFrom] = useState('/')
+  const [mode, setMode] = useState<Mode>('signin')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [displayName, setDisplayName] = useState('')
@@ -23,11 +23,19 @@ export default function LoginClient() {
   const [success, setSuccess] = useState('')
 
   const supabase = createBrowserSupabase()
+  // Keep a mutable ref so handleSubmit always has the latest `from` value
+  const fromRef = useRef('/')
 
-  // If already signed in, redirect immediately
+  // On mount: read URL params and check existing session
   useEffect(() => {
+    const params    = new URLSearchParams(window.location.search)
+    const fromParam = params.get('from') ?? '/'
+    setFrom(fromParam)
+    fromRef.current = fromParam
+    if (params.get('mode') === 'signup') setMode('signup')
+
     supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session) router.replace(from)
+      if (session) router.replace(fromParam)
     })
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 

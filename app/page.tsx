@@ -28,12 +28,20 @@ import FeedbackCue from '@/components/FeedbackCue'
 // Server-computed based on time-of-day and day-of-week.
 
 function getDynamicHeadline(): string {
-  const now  = new Date()
-  const hour = now.getHours()
-  const day  = now.getDay() // 0=Sun 1=Mon ... 6=Sat
-  const isWeekend = day === 0 || day === 5 || day === 6
-  if (isWeekend)  return 'This weekend in Davis'
-  if (hour >= 17) return 'Tonight in Davis'
+  const now   = new Date()
+  const LA_TZ = 'America/Los_Angeles'
+  // Use Intl.DateTimeFormat so we read the LA calendar day/hour on the server,
+  // not the server's UTC clock (which would show the wrong headline for US-West users).
+  const laHour = parseInt(
+    new Intl.DateTimeFormat('en-US', { timeZone: LA_TZ, hour: '2-digit', hour12: false }).format(now),
+    10,
+  ) % 24  // guard against the rare "24" midnight quirk in some JS engines
+  const laDay = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(
+    new Intl.DateTimeFormat('en-US', { timeZone: LA_TZ, weekday: 'short' }).format(now),
+  )
+  const isWeekend = laDay === 0 || laDay === 5 || laDay === 6
+  if (isWeekend)    return 'This weekend in Davis'
+  if (laHour >= 17) return 'Tonight in Davis'
   return 'Today in Davis'
 }
 

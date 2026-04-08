@@ -22,7 +22,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import Link from 'next/link'
 import Image from 'next/image'
-import { Settings2, MapPin, Clock, Sparkles, X } from 'lucide-react'
+import { Settings2, MapPin, Clock, Sparkles, X, ArrowRight } from 'lucide-react'
 import dynamic from 'next/dynamic'
 
 import { useInterests }    from '@/hooks/useInterests'
@@ -184,7 +184,7 @@ function ChatMiniCard({ item, onClose }: { item: ChatItem; onClose: () => void }
       <span className="text-[12px] font-medium text-[#374151] group-hover:text-[#111111] line-clamp-1 flex-1 min-w-0">
         {item.title}
       </span>
-      <span className="text-[10px] text-[#C4C9D4] group-hover:text-[#9CA3AF] shrink-0">→</span>
+      <ArrowRight className="w-3 h-3 text-[#C4C9D4] group-hover:text-[#9CA3AF] shrink-0" />
     </Link>
   )
 }
@@ -516,7 +516,7 @@ function IntentBar({ intentMode, loading, onSubmit, onClear }: IntentBarProps) {
               className="shrink-0 text-[13px] font-bold text-[#D97706] hover:text-[#B45309] disabled:opacity-30 transition-colors"
               aria-label="Submit"
             >
-              {loading ? '…' : '→'}
+              {loading ? '…' : <ArrowRight className="w-3.5 h-3.5" />}
             </button>
           )}
         </div>
@@ -749,7 +749,7 @@ export default function HomePersonalization() {
               href="/for-you"
               className="text-[12px] font-medium text-[#9CA3AF] hover:text-[#374151] transition-colors"
             >
-              See all →
+              See all <ArrowRight className="w-3 h-3 inline-block" />
             </Link>
           </div>
           {interestsHydrated && (

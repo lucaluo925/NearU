@@ -1,5 +1,4 @@
 import type { Metadata } from 'next'
-import { Suspense } from 'react'
 import Link from 'next/link'
 import LoginClient from './LoginClient'
 
@@ -17,9 +16,7 @@ export default function LoginPage() {
 
       {/* Card */}
       <div className="w-full max-w-[380px] bg-white border border-[#E5E7EB] rounded-3xl shadow-sm p-8">
-        <Suspense fallback={<div className="h-48 flex items-center justify-center text-[13px] text-[#9CA3AF]">Loading…</div>}>
-          <LoginClient />
-        </Suspense>
+        <LoginClient />
       </div>
 
       <p className="mt-6 text-[12px] text-[#9CA3AF]">

@@ -3,6 +3,7 @@ import type { Metadata } from 'next'
 import Header from '@/components/Header'
 import Footer from '@/components/Footer'
 import SearchClient from './SearchClient'
+import { SkeletonItemCard } from '@/components/SkeletonCard'
 
 export const metadata: Metadata = {
   title: 'Search — NearU',
@@ -22,7 +23,11 @@ export default function SearchPage() {
           </p>
         </div>
 
-        <Suspense fallback={null}>
+        <Suspense fallback={
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {[0, 1, 2, 3, 4, 5].map((i) => <SkeletonItemCard key={i} />)}
+          </div>
+        }>
           <SearchClient />
         </Suspense>
       </main>

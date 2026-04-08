@@ -200,7 +200,7 @@ function EventDateBanner({ start_time, end_time }: { start_time: string; end_tim
 }
 
 /** OSM map embed — no API key needed */
-function MapPreview({ lat, lng, address }: { lat: number; lng: number; address: string }) {
+function MapPreview({ lat, lng, label }: { lat: number; lng: number; label?: string }) {
   const delta  = 0.008
   const bbox   = `${lng - delta},${lat - delta},${lng + delta},${lat + delta}`
   const embedUrl = `https://www.openstreetmap.org/export/embed.html?bbox=${bbox}&layer=mapnik&marker=${lat},${lng}`
@@ -214,19 +214,19 @@ function MapPreview({ lat, lng, address }: { lat: number; lng: number; address: 
           width="100%"
           height="180"
           className="block border-0 pointer-events-none"
-          title={`Map showing ${address}`}
+          title={label ? `Map showing ${label}` : 'Map preview'}
           loading="lazy"
         />
         {/* Tap overlay — makes the whole tile a link on mobile */}
         <div className="absolute inset-0 bg-transparent" aria-hidden />
       </a>
       <div className="px-4 py-2.5 bg-white border-t border-[#F3F4F6] flex items-center justify-between">
-        <p className="text-[12px] text-[#6B7280] line-clamp-1 flex-1 min-w-0">{address}</p>
+        {label && <p className="text-[12px] text-[#6B7280] line-clamp-1 flex-1 min-w-0">{label}</p>}
         <a
           href={fullUrl}
           target="_blank"
           rel="noopener noreferrer"
-          className="text-[11px] font-medium text-[#374151] hover:text-[#111111] transition-colors ml-3 shrink-0"
+          className={`text-[11px] font-medium text-[#374151] hover:text-[#111111] transition-colors shrink-0${label ? ' ml-3' : ''}`}
         >
           Open map ↗
         </a>
@@ -374,6 +374,15 @@ export default async function ListingPage({ params }: Props) {
     ? `/${item.category}/${item.subcategory}`
     : category ? `/${item.category}` : '/'
 
+  // City / region: don't repeat region when it's the same value as city
+  const regionDisplay = item.region?.replace(/-/g, ' ') ?? ''
+  const showRegion    = !!(item.region && regionDisplay.toLowerCase() !== (item.city ?? '').toLowerCase())
+
+  // Subcategory chip: hide when the label starts with the category label
+  // (e.g. "Campus Events" chip is redundant when the category chip already shows "Campus")
+  const showSubcategoryChip = subcategoryLabel &&
+    !subcategoryLabel.toLowerCase().startsWith((category?.label ?? '').toLowerCase())
+
   return (
     <div className="min-h-screen flex flex-col bg-[#FAFAFA]">
       <ViewTracker itemId={item.id} category={item.category} title={item.title} />
@@ -418,9 +427,11 @@ export default async function ListingPage({ params }: Props) {
               <span className="text-[12px] font-medium bg-[#F3F4F6] text-[#6B7280] rounded-full px-3 py-1">
                 {category?.icon} {category?.label}
               </span>
-              <span className="text-[12px] font-medium bg-[#F3F4F6] text-[#6B7280] rounded-full px-3 py-1">
-                {subcategoryLabel}
-              </span>
+              {showSubcategoryChip && (
+                <span className="text-[12px] font-medium bg-[#F3F4F6] text-[#6B7280] rounded-full px-3 py-1">
+                  {subcategoryLabel}
+                </span>
+              )}
               {/* Rating near title */}
               <RatingBadge
                 avgRating={rating.avg_rating}
@@ -512,16 +523,16 @@ export default async function ListingPage({ params }: Props) {
             </div>
           )}
 
-          {/* City / region */}
-          {(item.city || item.region) && (
+          {/* City / region — skip region when it matches city (e.g. city="Davis" region="davis") */}
+          {(item.city || showRegion) && (
             <div className="flex items-center gap-3">
               <div className="w-8 h-8 rounded-xl bg-[#F3F4F6] flex items-center justify-center shrink-0">
                 <Map className="w-4 h-4 text-[#6B7280]" />
               </div>
               <div className="flex items-center gap-2 text-[13px] text-[#6B7280]">
                 {item.city && <span>{item.city}</span>}
-                {item.city && item.region && <span className="text-[#D1D5DB]">·</span>}
-                {item.region && <span className="capitalize">{item.region.replace(/-/g, ' ')}</span>}
+                {item.city && showRegion && <span className="text-[#D1D5DB]">·</span>}
+                {showRegion && <span className="capitalize">{regionDisplay}</span>}
               </div>
             </div>
           )}
@@ -542,9 +553,11 @@ export default async function ListingPage({ params }: Props) {
           })()}
         </div>
 
-        {/* Map preview — shown when we have coordinates */}
+        {/* Map preview — shown when we have coordinates.
+            Pass location_name (if any) as the footer label so the address
+            already shown in the Details Card above isn't repeated. */}
         {item.latitude && item.longitude && (
-          <MapPreview lat={item.latitude} lng={item.longitude} address={item.address} />
+          <MapPreview lat={item.latitude} lng={item.longitude} label={item.location_name ?? undefined} />
         )}
 
         {/* Action buttons */}

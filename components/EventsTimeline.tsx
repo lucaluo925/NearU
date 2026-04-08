@@ -94,10 +94,12 @@ async function fetchEventsInRange(
   start: Date,
   end: Date,
   limit = 8,
-): Promise<Item[]> {
-  const { data } = await supabase
+): Promise<{ items: Item[]; totalCount: number }> {
+  // count: 'exact' returns the true row count before the LIMIT is applied,
+  // so totalCount reflects all events in the range (not just the 8 we display).
+  const { data, count } = await supabase
     .from('items')
-    .select('*')
+    .select('*', { count: 'exact' })
     .eq('category', 'events')
     .eq('status', 'approved')
     .is('deleted_at', null)
@@ -105,7 +107,7 @@ async function fetchEventsInRange(
     .lte('start_time', end.toISOString())
     .order('start_time', { ascending: true })
     .limit(limit)
-  return (data ?? []) as Item[]
+  return { items: (data ?? []) as Item[], totalCount: count ?? 0 }
 }
 
 // ── Event mini-card ───────────────────────────────────────────────────────────
@@ -206,7 +208,7 @@ function EventCount({ count, href }: { count: number; href: string }) {
       href={href}
       className="flex items-center gap-1 text-[12px] font-medium text-[#6B7280] hover:text-[#374151] transition-colors group"
     >
-      <span>{count} event{count !== 1 ? 's' : ''}</span>
+      <span className="whitespace-nowrap">{count} event{count !== 1 ? 's' : ''}</span>
       <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-0.5 transition-transform" />
     </Link>
   )
@@ -251,19 +253,20 @@ export default async function EventsTimeline() {
   const supabase = getServerSupabase()
   const ranges   = getTimeRanges()
 
-  const [todayItems, tomorrowItems, weekendItems] = await Promise.all(
-    ranges.map((r) => fetchEventsInRange(supabase, r.start, r.end, 8).catch(() => [])),
+  const fallback = { items: [] as Item[], totalCount: 0 }
+  const [todayResult, tomorrowResult, weekendResult] = await Promise.all(
+    ranges.map((r) => fetchEventsInRange(supabase, r.start, r.end, 8).catch(() => fallback)),
   )
 
   const allGroups = [
-    { range: ranges[0], items: todayItems   ?? [] },
-    { range: ranges[1], items: tomorrowItems ?? [] },
-    { range: ranges[2], items: weekendItems  ?? [] },
-  ].filter((g) => g.range && g.items.length > 0)
+    { range: ranges[0], ...(todayResult   ?? fallback) },
+    { range: ranges[1], ...(tomorrowResult ?? fallback) },
+    { range: ranges[2], ...(weekendResult  ?? fallback) },
+  ].filter((g) => g.range && g.totalCount > 0)
 
   if (allGroups.length === 0) return null
 
-  const totalEvents = allGroups.reduce((s, g) => s + g.items.length, 0)
+  const totalEvents = allGroups.reduce((s, g) => s + g.totalCount, 0)
 
   return (
     <section className="mb-10">
@@ -284,8 +287,8 @@ export default async function EventsTimeline() {
       </div>
 
       <div className="flex flex-col gap-6">
-        {allGroups.map(({ range, items }) => (
-          <TimeSection key={range.label} range={range} items={items} totalCount={items.length} />
+        {allGroups.map(({ range, items, totalCount }) => (
+          <TimeSection key={range.label} range={range} items={items} totalCount={totalCount} />
         ))}
       </div>
     </section>

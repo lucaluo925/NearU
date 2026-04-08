@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
-import { Zap } from 'lucide-react'
+import { Zap, ArrowRight } from 'lucide-react'
 import { createBrowserSupabase } from '@/lib/supabase-browser'
 
 /**
@@ -46,7 +46,7 @@ export default function RewardsCue() {
         href="/rewards"
         className="text-[12px] font-semibold text-amber-600 hover:text-amber-700 transition-colors shrink-0"
       >
-        Rewards →
+        Rewards <ArrowRight className="w-3 h-3 inline-block" />
       </Link>
     </div>
   )
