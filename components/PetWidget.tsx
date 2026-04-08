@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import Link from 'next/link'
 import { ArrowRight } from 'lucide-react'
+import { track } from '@vercel/analytics'
 import { usePet } from '@/hooks/usePet'
 import { useToast } from '@/components/Toast'
 import { CATEGORIES } from '@/lib/constants'
@@ -924,6 +925,7 @@ function PetRecommendation({
   }
 
   function handleChip(chip: ChipKey) {
+    track('pet_chip_click', { chip })
     bumpEngagement('chipClicks')
     onInteracted?.()
     setEngagementCount(c => c + 1)
@@ -957,6 +959,7 @@ function PetRecommendation({
       localStorage.setItem(CAT_SIGNAL_KEY, JSON.stringify(updated))
       signalRef.current = updated
     } catch {}
+    track('pet_more_like_this')
     bumpEngagement('moreLikeThis')
     onInteracted?.()
     setEngagementCount(c => c + 1)
@@ -1833,6 +1836,7 @@ export default function PetWidget() {
       if (msgTimer.current) { clearTimeout(msgTimer.current); msgTimer.current = null }
       if (fadeTimer.current) { clearTimeout(fadeTimer.current); fadeTimer.current = null }
       setFadingOut(false)
+      track('pet_open')
       setOpen(true)
       return
     }

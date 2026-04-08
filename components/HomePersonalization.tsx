@@ -40,6 +40,7 @@ import {
   type ScoredItem,
 } from '@/lib/recommendations'
 import { getSeenIds, markSeen, trackImpression, getOvershownIds, getViewedIds } from '@/lib/session-seen'
+import { track } from '@vercel/analytics'
 import { Item, UC_DAVIS_LAT, UC_DAVIS_LNG } from '@/lib/types'
 import { CATEGORIES } from '@/lib/constants'
 import { formatTime, cn } from '@/lib/utils'
@@ -563,7 +564,7 @@ function TopPickCard({
   return (
     <Link
       href={`/listing/${item.id}`}
-      onClick={() => onClick?.(item)}
+      onClick={() => { track('pick_click', { slot: 'top', item_id: item.id, category: item.category ?? '' }); onClick?.(item) }}
       className="group relative w-full bg-white rounded-2xl border border-[#E5E7EB] shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all duration-200 overflow-hidden flex flex-col"
     >
       {/* Image — taller than the grid cards */}
@@ -652,7 +653,7 @@ function BackupPickCard({
   return (
     <Link
       href={`/listing/${item.id}`}
-      onClick={() => onClick?.(item)}
+      onClick={() => { track('pick_click', { slot: 'backup', item_id: item.id, category: item.category ?? '' }); onClick?.(item) }}
       className="group bg-white rounded-2xl border border-[#E5E7EB] shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all duration-200 overflow-hidden flex flex-row gap-3 p-3"
     >
       {/* Thumbnail */}

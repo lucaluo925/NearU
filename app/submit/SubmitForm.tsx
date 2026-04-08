@@ -9,6 +9,7 @@ import { REGION_OPTIONS } from '@/lib/types'
 import TagSelector from '@/components/TagSelector'
 import { cn } from '@/lib/utils'
 import { useToast } from '@/components/Toast'
+import { track } from '@vercel/analytics'
 
 type SuccessData = { id: string; category: string; subcategory: string; title: string }
 
@@ -225,6 +226,7 @@ export default function SubmitForm() {
       return setError('End time must be after start time.')
     }
 
+    track('submit_start', { category: form.category })
     setSubmitting(true)
     try {
       const payload = {
@@ -252,6 +254,7 @@ export default function SubmitForm() {
         if (res.status === 409) throw new Error('This listing already exists — it may have been submitted before.')
         throw new Error(data.error ?? 'Submission failed')
       }
+      track('submit_complete', { category: form.category, subcategory: form.subcategory })
       setSuccess({ id: data.id, category: form.category, subcategory: form.subcategory, title: form.title })
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Something went wrong. Please try again.')
