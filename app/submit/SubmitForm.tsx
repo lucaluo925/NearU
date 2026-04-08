@@ -54,6 +54,16 @@ export default function SubmitForm() {
     setError('')
   }
 
+  // ── Rate-limit helper ──────────────────────────────────────────────────────
+  // Reads the Retry-After header (seconds) and returns a human-readable string.
+  // Falls back to "a few minutes" when the header is absent or unparseable.
+  function fmtRetryAfter(res: Response): string {
+    const sec = parseInt(res.headers.get('Retry-After') ?? '0', 10)
+    if (!sec || sec <= 90)  return 'a minute'
+    const min = Math.ceil(sec / 60)
+    return `${min} minute${min === 1 ? '' : 's'}`
+  }
+
   async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
     if (!file) return
@@ -64,14 +74,27 @@ export default function SubmitForm() {
       const fd = new FormData()
       fd.append('file', file)
       const res = await fetch('/api/upload', { method: 'POST', body: fd })
+      if (!res.ok) {
+        // Status-specific messages before falling through to generic
+        if (res.status === 429) {
+          const wait = fmtRetryAfter(res)
+          throw new Error(`Upload limit reached — try again in ${wait}.`)
+        }
+        if (res.status === 401) {
+          throw new Error('Sign in to upload images.')
+        }
+        const data = await res.json().catch(() => ({}))
+        throw new Error((data as { error?: string }).error ?? 'Upload failed.')
+      }
       const data = await res.json()
-      if (!res.ok) throw new Error(data.error ?? 'Upload failed')
       setFlyerUrl(data.url)
       // Auto-analyze after upload
       await analyzeFlyer(data.url)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Upload failed')
+      setError(err instanceof Error ? err.message : 'Upload failed.')
       setFlyerPreview('')
+      // Reset the file input so the user can retry the same file
+      if (fileInputRef.current) fileInputRef.current.value = ''
     } finally {
       setUploading(false)
     }
@@ -86,23 +109,40 @@ export default function SubmitForm() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ imageUrl: url }),
       })
+      if (!res.ok) {
+        if (res.status === 429) {
+          const wait = fmtRetryAfter(res)
+          setAnalyzeError(`AI analysis limit reached — try again in ${wait}. You can still fill in the form manually.`)
+          return
+        }
+        if (res.status === 401) {
+          setAnalyzeError('Sign in to use AI flyer analysis.')
+          return
+        }
+        if (res.status === 503) {
+          setAnalyzeError("AI analysis isn't available right now. Fill in the form manually.")
+          return
+        }
+        setAnalyzeError('AI could not read this image. Fill in the form manually.')
+        return
+      }
       const ai = await res.json()
-      if (!res.ok || ai.error) {
+      if (ai.error) {
         setAnalyzeError('AI could not read this image. Fill in the form manually.')
         return
       }
 
       setForm((prev) => ({
         ...prev,
-        title: ai.title || prev.title,
-        description: ai.description || prev.description,
-        category: ai.category || prev.category,
-        subcategory: ai.subcategory || prev.subcategory,
+        title:         ai.title         || prev.title,
+        description:   ai.description   || prev.description,
+        category:      ai.category      || prev.category,
+        subcategory:   ai.subcategory   || prev.subcategory,
         location_name: ai.location_name || prev.location_name,
-        address: ai.address || prev.address,
-        start_time: ai.start_time ? ai.start_time.slice(0, 16) : prev.start_time,
-        end_time: ai.end_time ? ai.end_time.slice(0, 16) : prev.end_time,
-        tags: ai.tags?.length ? ai.tags : prev.tags,
+        address:       ai.address       || prev.address,
+        start_time:    ai.start_time    ? ai.start_time.slice(0, 16) : prev.start_time,
+        end_time:      ai.end_time      ? ai.end_time.slice(0, 16)   : prev.end_time,
+        tags:          ai.tags?.length  ? ai.tags : prev.tags,
       }))
       showToast('AI filled in the details — review and edit before submitting', 'info')
     } catch {
@@ -117,30 +157,44 @@ export default function SubmitForm() {
     setAnalyzing(true)
     setAnalyzeError('')
     try {
-      // Use OpenGraph/oEmbed to get the image URL from an Instagram link
-      const oembedUrl = `https://graph.facebook.com/v18.0/instagram_oembed?url=${encodeURIComponent(instagramLink)}&fields=thumbnail_url`
-      // Fallback: just pass the link directly as imageUrl and let the AI handle whatever it can
       const res = await fetch('/api/analyze-flyer', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ imageUrl: instagramLink }),
       })
+      if (!res.ok) {
+        if (res.status === 429) {
+          const wait = fmtRetryAfter(res)
+          setAnalyzeError(`AI analysis limit reached — try again in ${wait}. You can still fill in the form manually.`)
+          return
+        }
+        if (res.status === 401) {
+          setAnalyzeError('Sign in to use AI flyer analysis.')
+          return
+        }
+        if (res.status === 503) {
+          setAnalyzeError("AI analysis isn't available right now. Try uploading a screenshot instead.")
+          return
+        }
+        setAnalyzeError('Could not analyze this link. Try uploading a screenshot instead.')
+        return
+      }
       const ai = await res.json()
-      if (!res.ok || ai.error) {
+      if (ai.error) {
         setAnalyzeError('Could not analyze this link. Try uploading a screenshot instead.')
         return
       }
       setForm((prev) => ({
         ...prev,
-        title: ai.title || prev.title,
-        description: ai.description || prev.description,
-        category: ai.category || prev.category,
-        subcategory: ai.subcategory || prev.subcategory,
+        title:         ai.title         || prev.title,
+        description:   ai.description   || prev.description,
+        category:      ai.category      || prev.category,
+        subcategory:   ai.subcategory   || prev.subcategory,
         location_name: ai.location_name || prev.location_name,
-        address: ai.address || prev.address,
-        start_time: ai.start_time ? ai.start_time.slice(0, 16) : prev.start_time,
-        end_time: ai.end_time ? ai.end_time.slice(0, 16) : prev.end_time,
-        tags: ai.tags?.length ? ai.tags : prev.tags,
+        address:       ai.address       || prev.address,
+        start_time:    ai.start_time    ? ai.start_time.slice(0, 16) : prev.start_time,
+        end_time:      ai.end_time      ? ai.end_time.slice(0, 16)   : prev.end_time,
+        tags:          ai.tags?.length  ? ai.tags : prev.tags,
       }))
       showToast('AI filled in the details from the link — review before submitting', 'info')
     } catch {
