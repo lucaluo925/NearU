@@ -413,7 +413,7 @@ export default async function ListingPage({ params }: Props) {
             <FallbackHero category={item.category} title={item.title} />
           )}
           <div className="absolute top-4 right-4">
-            <FavoriteButton id={item.id} />
+            <FavoriteButton id={item.id} category={item.category} />
           </div>
         </div>
 

@@ -218,7 +218,7 @@ function ListCard({ item }: { item: ItemWithDistance }) {
                 {item.title}
               </h3>
             </Link>
-            <FavoriteButton id={item.id} className="shrink-0 -mt-0.5" />
+            <FavoriteButton id={item.id} category={item.category} className="shrink-0 -mt-0.5" />
           </div>
 
           {/* Badges row — reserved even when empty */}
@@ -319,7 +319,7 @@ function GridCard({ item }: { item: ItemWithDistance }) {
           }
         </div>
         <div className="absolute top-2.5 right-2.5">
-          <FavoriteButton id={item.id} />
+          <FavoriteButton id={item.id} category={item.category} />
         </div>
       </Link>
 

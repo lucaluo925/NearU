@@ -2,16 +2,18 @@
 
 import { useState, useRef, useEffect } from 'react'
 import { Heart, Check } from 'lucide-react'
+import { track } from '@vercel/analytics'
 import { useFavorites, DEFAULT_COLLECTIONS } from '@/hooks/useFavorites'
 import { useToast } from '@/components/Toast'
 import { cn } from '@/lib/utils'
 
 interface FavoriteButtonProps {
   id: string
+  category?: string
   className?: string
 }
 
-export default function FavoriteButton({ id, className }: FavoriteButtonProps) {
+export default function FavoriteButton({ id, category, className }: FavoriteButtonProps) {
   const { isFavorite, getCollection, toggle, moveToCollection, hydrated, collectionNames } = useFavorites()
   const { show } = useToast()
   const saved = hydrated && isFavorite(id)
@@ -61,6 +63,7 @@ export default function FavoriteButton({ id, className }: FavoriteButtonProps) {
         body: JSON.stringify({ item_id: id, type: 'favorite' }),
       }).catch(() => {})
       toggle(id, collection)
+      track('favorite', { item_id: id, category: category ?? '' })
       show('+2 pts — Saved ❤️')
     }
     setShowPicker(false)
