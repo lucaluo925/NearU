@@ -34,11 +34,12 @@ import {
   reasonFor,
   fetchScoredFeed,
   pickTopAndBackups,
+  applyImpressionPenalty,
   haversineKm,
   type ScoreContext,
   type ScoredItem,
 } from '@/lib/recommendations'
-import { getSeenIds, markSeen } from '@/lib/session-seen'
+import { getSeenIds, markSeen, trackImpression, getOvershownIds } from '@/lib/session-seen'
 import { Item, UC_DAVIS_LAT, UC_DAVIS_LNG } from '@/lib/types'
 import { CATEGORIES } from '@/lib/constants'
 import { formatTime, cn } from '@/lib/utils'
@@ -762,17 +763,27 @@ function ForYouSection({ savedTags, savedCats, ctx, activeChip, recordClick }: F
   }, [savedTags.join(','), savedCats.join(',')])
 
   const { top, backups } = useMemo(() => {
-    const filtered = applyChipFilter(baseScored, activeChip)
-    const seenIds  = getSeenIds()
+    // Apply impression penalty before chip filter + diversity pass.
+    // Items repeatedly shown in this featured section without a click
+    // get a -4 score penalty so the feed rotates naturally across sessions.
+    const overshown = getOvershownIds(4)
+    const penalised = applyImpressionPenalty(baseScored, overshown)
+    const filtered  = applyChipFilter(penalised, activeChip)
+    const seenIds   = getSeenIds()
     return pickTopAndBackups(filtered, seenIds)
   }, [baseScored, activeChip])
 
-  // Register shown items so /for-you page's featured section won't repeat them
+  // Register shown items so /for-you page's featured section won't repeat them.
+  // Track impressions with first-screen weight (all 3 featured picks are above the fold).
   useEffect(() => {
     const ids: string[] = []
-    if (top)           ids.push(top.item.id)
+    if (top) ids.push(top.item.id)
     backups.forEach(b => ids.push(b.item.id))
-    if (ids.length > 0) markSeen(ids)
+    if (ids.length > 0) {
+      markSeen(ids)
+      // All featured picks are first-screen — weight 2 each
+      trackImpression(ids, ids.length)
+    }
   }, [top, backups])
 
   if (loading) return <TopPickSkeleton />
@@ -1020,9 +1031,14 @@ export default function HomePersonalization() {
   useEffect(() => { ctxRef.current = ctx }, [ctx])
 
   // ── Intent submit handler ─────────────────────────────────────────────────
+  //
+  // FIX: removed the setIntentMode(false) call that was here previously.
+  // That flip triggered IntentBar's !intentMode useEffect and cleared the input
+  // value immediately while the fetch was still in-flight — the user's query
+  // disappeared mid-loading.  Input clearing now happens naturally when the user
+  // clicks "✕ clear" (onClear → setIntentMode(false)).
   const handleIntentSubmit = useCallback(async (query: string) => {
     setIntentLoading(true)
-    setIntentMode(false)
 
     try {
       const intent     = parseIntent(query)

@@ -112,19 +112,35 @@ function loadImpressions(): Record<string, number> {
 
 /**
  * Increment the impression counter for each given item ID.
- * Call this each time a set of items is rendered to the user.
+ *
+ * `firstScreenCount` — how many of the leading items in `ids` are in the
+ * first-screen visible positions (above the fold).  First-screen exposures
+ * accumulate at weight 2 per render because the user definitely saw them.
+ * Below-fold items accumulate at weight 1 — the user may have scrolled past
+ * without noticing.
+ *
+ * Calibration:
+ *   - First-screen threshold = 4 weighted points → shown twice first-screen
+ *     (2+2=4) or seen four times below-fold (1×4=4).
+ *   - This prevents punishing items that happen to appear deep in a long feed
+ *     the user never scrolled to, while strongly penalising items that have
+ *     been featured prominently and repeatedly ignored.
+ *
+ * Call this every time a set of items becomes visible to the user.
  */
-export function trackImpression(ids: string[]): void {
+export function trackImpression(ids: string[], firstScreenCount: number = 0): void {
   if (typeof window === 'undefined' || ids.length === 0) return
   try {
     const counts = loadImpressions()
-    for (const id of ids) {
-      counts[id] = (counts[id] ?? 0) + 1
+    for (let i = 0; i < ids.length; i++) {
+      // First-screen items (positions 0…firstScreenCount-1) weight 2; rest weight 1
+      const weight     = i < firstScreenCount ? 2 : 1
+      counts[ids[i]]   = (counts[ids[i]] ?? 0) + weight
     }
     // Cap at 500 entries — evict lowest-count entries first
     const entries = Object.entries(counts)
     if (entries.length > 500) {
-      entries.sort(([, a], [, b]) => b - a)          // descending by count
+      entries.sort(([, a], [, b]) => b - a)   // descending by count
       const trimmed = Object.fromEntries(entries.slice(0, 500))
       sessionStorage.setItem(IMPRESSION_KEY, JSON.stringify(trimmed))
     } else {
@@ -134,14 +150,17 @@ export function trackImpression(ids: string[]): void {
 }
 
 /**
- * Returns the set of item IDs that have been shown at least `threshold` times
- * this session without the user clicking them.
+ * Returns the set of item IDs whose weighted impression score meets or exceeds
+ * `threshold` this session.
  *
- * These are candidates for a score penalty in `applyImpressionPenalty`.
- * Default threshold of 3 means an item must have appeared in 3 separate
- * render cycles before it is considered "ignored".
+ * Default threshold of 4 means an item is "over-shown" when it has been:
+ *   - displayed first-screen twice (2+2 = 4), OR
+ *   - displayed below-fold four times (1×4 = 4), OR
+ *   - any combination that sums to 4.
+ *
+ * These IDs are candidates for `applyImpressionPenalty` in recommendations.ts.
  */
-export function getOvershownIds(threshold: number = 3): Set<string> {
+export function getOvershownIds(threshold: number = 4): Set<string> {
   const counts = loadImpressions()
   return new Set(
     Object.entries(counts)

@@ -29,11 +29,12 @@ import {
   reasonFor,
   fetchScoredFeed,
   pickTopAndBackups,
+  applyImpressionPenalty,
   haversineKm,
   type ScoreContext,
   type ScoredItem,
 } from '@/lib/recommendations'
-import { getSeenIds, markSeen } from '@/lib/session-seen'
+import { getSeenIds, markSeen, trackImpression, getOvershownIds } from '@/lib/session-seen'
 import { Item, UC_DAVIS_LAT, UC_DAVIS_LNG } from '@/lib/types'
 import { CATEGORIES } from '@/lib/constants'
 import { formatTime, cn, startOfLADay, endOfLADay } from '@/lib/utils'
@@ -988,13 +989,26 @@ export default function ForYouClient() {
     setActiveQuery(null)
   }, [])
 
-  // Featured section (top pick + backups) — skips items already seen on the homepage
+  // Featured section (top pick + backups) — skips items already seen on the homepage.
+  // Apply impression penalty before pick so repeatedly-shown-but-ignored items
+  // are pushed down and the featured section rotates across sessions.
   const { featuredTop, featuredBackups } = useMemo(() => {
-    const seen = getSeenIds()
-    const { top, backups } = pickTopAndBackups(feed, seen)
+    const overshown = getOvershownIds(4)
+    const penalised = applyImpressionPenalty(feed, overshown)
+    const seen      = getSeenIds()
+    const { top, backups } = pickTopAndBackups(penalised, seen)
     return { featuredTop: top, featuredBackups: backups }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [feed])
+
+  // Track impressions for the featured picks each time they change.
+  // Featured picks are always first-screen — all get weight 2.
+  useEffect(() => {
+    const ids: string[] = []
+    if (featuredTop) ids.push(featuredTop.item.id)
+    featuredBackups.forEach(b => ids.push(b.item.id))
+    if (ids.length > 0) trackImpression(ids, ids.length)
+  }, [featuredTop, featuredBackups])
 
   // Apply filter + page window — exclude featured items to avoid repetition in grid
   const filtered = useMemo(() => {
@@ -1006,6 +1020,15 @@ export default function ForYouClient() {
   }, [feed, filter, featuredTop, featuredBackups])
   const visible  = useMemo(() => filtered.slice(0, visibleCount), [filtered, visibleCount])
   const hasMore  = visibleCount < filtered.length
+
+  // Track impressions for the infinite-scroll grid as items become visible.
+  // First 4 grid items are above the fold (first-screen weight 2); the rest
+  // are below-fold scroll content (weight 1).
+  useEffect(() => {
+    if (visible.length === 0) return
+    const ids = visible.map(s => s.item.id)
+    trackImpression(ids, Math.min(4, ids.length))
+  }, [visible])
 
   return (
     <div className="min-h-screen flex flex-col">
