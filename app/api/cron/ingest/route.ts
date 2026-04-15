@@ -10,10 +10,26 @@ import { parseICS, icsUidToSlug } from '@/lib/ingestion/ics'
  * for the local event feed. Be conservative — when in doubt, exclude.
  */
 const LOCAL_LOCALITIES = new Set([
-  'Davis', 'Woodland', 'West Sacramento', 'Sacramento',
-  'Winters', 'Dixon', 'Vacaville', 'Fairfield',
-  'Elk Grove', 'Rancho Cordova', 'Folsom', 'Roseville',
-  'Citrus Heights', 'Natomas', 'Yolo',
+  // Core Davis/Yolo
+  'Davis', 'Woodland', 'West Sacramento', 'Winters', 'Dixon', 'Yolo',
+  // Sacramento metro
+  'Sacramento', 'Elk Grove', 'Rancho Cordova', 'Folsom', 'Roseville',
+  'Citrus Heights', 'Natomas', 'Carmichael', 'Fair Oaks', 'Orangevale',
+  'Rocklin', 'Lincoln', 'Loomis', 'Granite Bay', 'Gold River',
+  'Arden-Arcade', 'North Highlands',
+  // Solano County (within 100mi)
+  'Vacaville', 'Fairfield', 'Suisun City', 'Vallejo', 'Benicia', 'Dixon',
+  // Yolo County extended
+  'Esparto', 'Clarksburg', 'Knights Landing', 'Capay',
+  // Placer/El Dorado foothills
+  'Auburn', 'Placerville', 'El Dorado Hills', 'Cameron Park',
+  // Napa / Sonoma (within 100mi)
+  'Napa', 'Sonoma', 'Petaluma', 'Santa Rosa',
+  // San Joaquin (within 100mi)
+  'Stockton', 'Lodi', 'Tracy', 'Manteca',
+  // Lake / Colusa / Sutter / Yuba
+  'Marysville', 'Yuba City', 'Grass Valley', 'Nevada City',
+  'Colusa', 'Williams',
 ])
 
 /**
@@ -42,7 +58,7 @@ const DAVIS_LAT = 38.5449
 const DAVIS_LNG = -121.7405
 
 /** Maximum allowed distance from Davis center, in miles. */
-const MAX_RADIUS_MILES = 50
+const MAX_RADIUS_MILES = 100
 
 /** Haversine distance between two lat/lng points, in miles. */
 function haversineDistanceMiles(
@@ -59,10 +75,10 @@ function haversineDistanceMiles(
 }
 
 /** Regex for local city names (broader, for string-only address matching). */
-const LOCAL_ADDR_RE = /\b(davis|sacramento|west\s*sacramento|woodland|dixon|winters|vacaville|fairfield|elk\s*grove|rancho\s*cordova|folsom|roseville|citrus\s*heights|natomas|yolo)\b/i
+const LOCAL_ADDR_RE = /\b(davis|sacramento|west\s*sacramento|woodland|dixon|winters|vacaville|fairfield|elk\s*grove|rancho\s*cordova|folsom|roseville|citrus\s*heights|natomas|yolo|carmichael|fair\s*oaks|orangevale|rocklin|lincoln|auburn|placerville|napa|sonoma|santa\s*rosa|stockton|lodi|tracy|marysville|yuba\s*city|grass\s*valley|nevada\s*city|vallejo|benicia|loomis|granite\s*bay)\b/i
 
 /** Clearly non-local California cities (SoCal, Bay Area, Central Valley far south). */
-const NONLOCAL_CA_RE = /\b(irvine|los\s*angeles|l\.?a\b|san\s*diego|anaheim|santa\s*ana|riverside|long\s*beach|san\s*jose|san\s*francisco|s\.?f\b|berkeley|oakland|fresno|bakersfield|stockton|modesto|santa\s*barbara|santa\s*cruz|san\s*luis\s*obispo|pasadena|burbank)\b/i
+const NONLOCAL_CA_RE = /\b(irvine|los\s*angeles|l\.?a\b|san\s*diego|anaheim|santa\s*ana|riverside|long\s*beach|san\s*jose|san\s*francisco|s\.?f\b|berkeley|oakland|fresno|bakersfield|modesto|santa\s*barbara|santa\s*cruz|san\s*luis\s*obispo|pasadena|burbank)\b/i
 
 interface RejectionEntry {
   title:    string
@@ -255,11 +271,13 @@ function categorizeEvent(title: string, hint = ''): string {
   const t = (title + ' ' + hint).toLowerCase()
   if (/career|job|recruit|intern|networking|professional|resume/.test(t)) return 'career-networking'
   if (/lecture|seminar|colloquium|symposium|talk|workshop|publish|training/.test(t)) return 'academic-lecture'
-  if (/concert|music|perform|theatre|theater|gallery|exhibit|art|reading|author|folk|jazz/.test(t)) return 'arts-music'
-  if (/sport|game|match|tournament|athlet|yoga|fitness/.test(t)) return 'sports'
+  if (/nightlife|nightclub|club\s*night|bar\s*crawl|happy\s*hour|after\s*dark|late\s*night|21\+|18\+/.test(t)) return 'nightlife'
+  if (/festival|fest\b|carnival|fair\b|block\s*party|food\s*truck|beer|wine\s*tasting|brew/.test(t)) return 'festival'
+  if (/concert|music|perform|theatre|theater|gallery|exhibit|art|reading|author|folk|jazz|dj|edm|hip\s*hop|rap|punk|indie|karaoke|open\s*mic|live\s*band/.test(t)) return 'arts-music'
+  if (/sport|game|match|tournament|athlet|yoga|fitness|basketball|soccer|football|baseball/.test(t)) return 'sports'
   if (/volunteer|service|community|charity|weed|stewardship|cleanup/.test(t)) return 'volunteer'
   if (/club|org|association|society|meeting|group/.test(t)) return 'club-student-org'
-  if (/picnic|party|social|mixer|reception|celebration/.test(t)) return 'social-party'
+  if (/picnic|party|social|mixer|reception|celebration|dance|rave|gala/.test(t)) return 'social-party'
   return 'campus-events'
 }
 
@@ -1584,6 +1602,741 @@ async function fetchVisitYolo(stat: SourceStat): Promise<Record<string, unknown>
   }
 }
 
+// ── Source: Eventbrite — Sacramento (JSON-LD, same pattern as Davis) ─────────
+
+async function fetchEventbriteSacramento(stat: SourceStat): Promise<Record<string, unknown>[]> {
+  const url = 'https://www.eventbrite.com/d/ca--sacramento/events/'
+  try {
+    const res = await fetchWithRetry(
+      url,
+      {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+          Accept:          'text/html,application/xhtml+xml',
+          'Accept-Language': 'en-US,en;q=0.9',
+        },
+      },
+      25_000
+    )
+    if (!res.ok) { stat.errors.push(`Eventbrite Sacramento HTTP ${res.status}`); return [] }
+    const html = await res.text()
+
+    const ldMatch = html.match(/<script[^>]+type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/i)
+    if (!ldMatch) { stat.errors.push('Eventbrite Sacramento: no JSON-LD found'); return [] }
+
+    let ldData: Record<string, unknown>
+    try { ldData = JSON.parse(ldMatch[1].trim()) }
+    catch { stat.errors.push('Eventbrite Sacramento: JSON-LD parse error'); return [] }
+
+    const rawItems = (ldData['itemListElement'] as unknown[]) ?? []
+    stat.fetched = rawItems.length
+
+    const yesterday = new Date(Date.now() - 86_400_000)
+    const events: Record<string, unknown>[] = []
+
+    for (const listItem of rawItems) {
+      const item = listItem as Record<string, unknown>
+      const ev   = item['item'] as Record<string, unknown> | undefined
+      if (!ev) continue
+
+      const name = typeof ev['name'] === 'string' ? ev['name'].trim() : null
+      if (!name) continue
+
+      const startStr = typeof ev['startDate'] === 'string' ? ev['startDate'] : null
+      if (!startStr) continue
+      const startDt = new Date(startStr.length === 10 ? `${startStr}T12:00:00-07:00` : startStr)
+      if (isNaN(startDt.getTime()) || startDt < yesterday) continue
+
+      const endStr = typeof ev['endDate'] === 'string' ? ev['endDate'] : null
+      const endDt  = endStr ? new Date(endStr.length === 10 ? `${endStr}T23:59:00-07:00` : endStr) : null
+
+      const evUrl   = typeof ev['url'] === 'string' ? ev['url'] : url
+      const idMatch = evUrl.match(/-(\d{6,})(?:\/|$|\?)/)
+      const evId    = idMatch?.[1] ?? icsUidToSlug(evUrl).slice(-20)
+
+      const locObj   = ev['location'] as Record<string, unknown> | undefined
+      const locName  = typeof locObj?.['name'] === 'string' ? (locObj['name'] as string) : null
+      const addrObj  = locObj?.['address'] as Record<string, unknown> | undefined
+      const locality = typeof addrObj?.['addressLocality'] === 'string' ? (addrObj['addressLocality'] as string) : ''
+
+      if (locality && !LOCAL_LOCALITIES.has(locality)) continue
+
+      const streetAddr = typeof addrObj?.['streetAddress'] === 'string' ? addrObj['streetAddress'] as string : null
+      const fullAddress = streetAddr ? `${streetAddr}, ${locality || 'Sacramento'}, CA` : `${locality || 'Sacramento'}, CA`
+
+      const region = locality === 'Davis' ? 'davis'
+        : ['Sacramento', 'West Sacramento'].includes(locality) ? 'sacramento'
+        : 'sacramento'
+
+      const body = name.toLowerCase()
+      const tags = ['community']
+      if (/free|no cost|complimentary/i.test(body)) tags.push('free')
+      if (/outdoor|garden|park|plaza/i.test(body))  tags.push('outdoor')
+
+      events.push({
+        title:           name.slice(0, 200),
+        description:     null,
+        category:        'events',
+        subcategory:     categorizeEvent(name),
+        location_name:   locName,
+        address:         fullAddress,
+        city:            locality || 'Sacramento',
+        region,
+        latitude:        null,
+        longitude:       null,
+        start_time:      startDt.toISOString(),
+        end_time:        endDt && !isNaN(endDt.getTime()) ? endDt.toISOString() : null,
+        external_link:   evUrl,
+        flyer_image_url: null,
+        source:          'eventbrite-sacramento',
+        source_type:     'eventbrite-sacramento',
+        source_url:      evUrl,
+        external_id:     `eventbrite-sac-${evId}`,
+        tags,
+        last_seen_at:    new Date().toISOString(),
+      })
+    }
+    stat.parsed = events.length
+    return events
+  } catch (err) {
+    stat.errors.push(`Eventbrite Sacramento fetch failed: ${(err as Error).message}`)
+    return []
+  }
+}
+
+// ── Source: Eventbrite — Nightlife & Parties ─────────────────────────────────
+
+async function fetchEventbriteNightlife(stat: SourceStat): Promise<Record<string, unknown>[]> {
+  const url = 'https://www.eventbrite.com/d/ca--sacramento/nightlife--events/'
+  try {
+    const res = await fetchWithRetry(
+      url,
+      {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+          Accept:          'text/html,application/xhtml+xml',
+          'Accept-Language': 'en-US,en;q=0.9',
+        },
+      },
+      25_000
+    )
+    if (!res.ok) { stat.errors.push(`Eventbrite Nightlife HTTP ${res.status}`); return [] }
+    const html = await res.text()
+
+    const ldMatch = html.match(/<script[^>]+type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/i)
+    if (!ldMatch) { stat.errors.push('Eventbrite Nightlife: no JSON-LD found'); return [] }
+
+    let ldData: Record<string, unknown>
+    try { ldData = JSON.parse(ldMatch[1].trim()) }
+    catch { stat.errors.push('Eventbrite Nightlife: JSON-LD parse error'); return [] }
+
+    const rawItems = (ldData['itemListElement'] as unknown[]) ?? []
+    stat.fetched = rawItems.length
+
+    const yesterday = new Date(Date.now() - 86_400_000)
+    const events: Record<string, unknown>[] = []
+
+    for (const listItem of rawItems) {
+      const item = listItem as Record<string, unknown>
+      const ev   = item['item'] as Record<string, unknown> | undefined
+      if (!ev) continue
+
+      const name = typeof ev['name'] === 'string' ? ev['name'].trim() : null
+      if (!name) continue
+
+      const startStr = typeof ev['startDate'] === 'string' ? ev['startDate'] : null
+      if (!startStr) continue
+      const startDt = new Date(startStr.length === 10 ? `${startStr}T20:00:00-07:00` : startStr)
+      if (isNaN(startDt.getTime()) || startDt < yesterday) continue
+
+      const endStr = typeof ev['endDate'] === 'string' ? ev['endDate'] : null
+      const endDt  = endStr ? new Date(endStr.length === 10 ? `${endStr}T02:00:00-07:00` : endStr) : null
+
+      const evUrl   = typeof ev['url'] === 'string' ? ev['url'] : url
+      const idMatch = evUrl.match(/-(\d{6,})(?:\/|$|\?)/)
+      const evId    = idMatch?.[1] ?? icsUidToSlug(evUrl).slice(-20)
+
+      const locObj   = ev['location'] as Record<string, unknown> | undefined
+      const locName  = typeof locObj?.['name'] === 'string' ? (locObj['name'] as string) : null
+      const addrObj  = locObj?.['address'] as Record<string, unknown> | undefined
+      const locality = typeof addrObj?.['addressLocality'] === 'string' ? (addrObj['addressLocality'] as string) : ''
+
+      if (locality && !LOCAL_LOCALITIES.has(locality)) continue
+
+      const streetAddr = typeof addrObj?.['streetAddress'] === 'string' ? addrObj['streetAddress'] as string : null
+      const fullAddress = streetAddr ? `${streetAddr}, ${locality || 'Sacramento'}, CA` : `${locality || 'Sacramento'}, CA`
+
+      const body = name.toLowerCase()
+      const tags = ['community', 'nightlife']
+      if (/free|no cost|complimentary/i.test(body)) tags.push('free')
+      if (/21\+|18\+/.test(body)) tags.push('age-restricted')
+
+      events.push({
+        title:           name.slice(0, 200),
+        description:     null,
+        category:        'events',
+        subcategory:     categorizeEvent(name) === 'campus-events' ? 'nightlife' : categorizeEvent(name),
+        location_name:   locName,
+        address:         fullAddress,
+        city:            locality || 'Sacramento',
+        region:          'sacramento',
+        latitude:        null,
+        longitude:       null,
+        start_time:      startDt.toISOString(),
+        end_time:        endDt && !isNaN(endDt.getTime()) ? endDt.toISOString() : null,
+        external_link:   evUrl,
+        flyer_image_url: null,
+        source:          'eventbrite-nightlife',
+        source_type:     'eventbrite-nightlife',
+        source_url:      evUrl,
+        external_id:     `eventbrite-nightlife-${evId}`,
+        tags,
+        last_seen_at:    new Date().toISOString(),
+      })
+    }
+    stat.parsed = events.length
+    return events
+  } catch (err) {
+    stat.errors.push(`Eventbrite Nightlife fetch failed: ${(err as Error).message}`)
+    return []
+  }
+}
+
+// ── Source: Meetup — Davis Area (JSON-LD) ────────────────────────────────────
+
+async function fetchMeetupDavis(stat: SourceStat): Promise<Record<string, unknown>[]> {
+  const url = 'https://www.meetup.com/find/?location=Davis%2C+CA&source=EVENTS'
+  const DEFAULT_LAT = 38.5449
+  const DEFAULT_LNG = -121.7405
+  try {
+    const res = await fetchWithRetry(
+      url,
+      {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+          Accept:          'text/html,application/xhtml+xml',
+          'Accept-Language': 'en-US,en;q=0.9',
+        },
+      },
+      25_000
+    )
+    if (!res.ok) { stat.errors.push(`Meetup Davis HTTP ${res.status}`); return [] }
+    const html = await res.text()
+
+    const ldEvents = extractJsonLdEvents(html)
+    stat.fetched = ldEvents.length
+
+    const yesterday = new Date(Date.now() - 86_400_000)
+    const events: Record<string, unknown>[] = []
+
+    for (const ev of ldEvents) {
+      const mode = typeof ev['eventAttendanceMode'] === 'string' ? ev['eventAttendanceMode'] : ''
+      if (mode.toLowerCase().includes('online')) continue
+
+      const name = typeof ev['name'] === 'string' ? ev['name'].trim() : null
+      if (!name) continue
+
+      const startStr = typeof ev['startDate'] === 'string' ? ev['startDate'] : null
+      if (!startStr) continue
+      const startDt = new Date(startStr)
+      if (isNaN(startDt.getTime()) || startDt < yesterday) continue
+
+      const endStr = typeof ev['endDate'] === 'string' ? ev['endDate'] : null
+      const endDt  = endStr ? new Date(endStr) : null
+
+      const evUrl = typeof ev['url'] === 'string' ? ev['url'] : url
+
+      const locObj = ev['location'] as Record<string, unknown> | undefined
+      if (locObj?.['@type'] === 'VirtualLocation') continue
+      if (!locObj) continue
+
+      const locName = typeof locObj['name'] === 'string' ? locObj['name'] : null
+      const addrVal = locObj['address']
+      const addrStr = typeof addrVal === 'string'
+        ? addrVal
+        : typeof (addrVal as Record<string, unknown> | undefined)?.['streetAddress'] === 'string'
+          ? `${(addrVal as Record<string, unknown>)['streetAddress']}, ${(addrVal as Record<string, unknown>)['addressLocality'] ?? 'Davis'}, CA`
+          : null
+
+      const meetupLocality = typeof addrVal === 'object' && addrVal !== null
+        ? (typeof (addrVal as Record<string, unknown>)['addressLocality'] === 'string'
+            ? (addrVal as Record<string, unknown>)['addressLocality'] as string
+            : null)
+        : null
+
+      if (!isLocalLocality(meetupLocality)) { stat.skipped++; continue }
+      if (hasNonCaliforniaState(addrStr)) { stat.skipped++; continue }
+
+      const meetupCity = meetupLocality ?? 'Davis'
+
+      const idMatch = evUrl.match(/\/events\/(\d+)/)
+      const evId    = idMatch?.[1] ?? icsUidToSlug(evUrl).slice(-20)
+
+      const body = name.toLowerCase()
+      const tags = ['community']
+      if (/free|no cost|complimentary/i.test(body)) tags.push('free')
+
+      events.push({
+        title:           name.slice(0, 200),
+        description:     typeof ev['description'] === 'string' ? (ev['description'] as string).slice(0, 500) : null,
+        category:        'events',
+        subcategory:     categorizeEvent(name),
+        location_name:   locName ?? 'Davis, CA',
+        address:         addrStr ?? 'Davis, CA',
+        city:            meetupCity,
+        region:          meetupCity === 'Davis' ? 'davis' : 'sacramento',
+        latitude:        DEFAULT_LAT,
+        longitude:       DEFAULT_LNG,
+        start_time:      startDt.toISOString(),
+        end_time:        endDt && !isNaN(endDt.getTime()) ? endDt.toISOString() : null,
+        external_link:   evUrl,
+        flyer_image_url: null,
+        source:          'meetup-davis',
+        source_type:     'meetup-davis',
+        source_url:      evUrl,
+        external_id:     `meetup-davis-${evId}`,
+        tags,
+        last_seen_at:    new Date().toISOString(),
+      })
+    }
+    stat.parsed = events.length
+    return events
+  } catch (err) {
+    stat.errors.push(`Meetup Davis fetch failed: ${(err as Error).message}`)
+    return []
+  }
+}
+
+// ── Source: Sacramento Kings (NBA Schedule API) ──────────────────────────────
+
+async function fetchSacramentoKings(stat: SourceStat): Promise<Record<string, unknown>[]> {
+  // NBA CDN schedule endpoint (public, no auth required)
+  const GOLDEN1_LAT  = 38.5802
+  const GOLDEN1_LNG  = -121.4997
+  const GOLDEN1_ADDR = '500 David J Stern Walk, Sacramento, CA 95814'
+
+  // Try NBA CDN schedule — structure: lscd[].mscd.g[] where g = game array
+  const year = new Date().getFullYear()
+  const url  = `https://cdn.nba.com/static/json/staticData/scheduleLeagueV2.json`
+
+  try {
+    const res = await fetchWithRetry(url, {
+      headers: { 'User-Agent': UA, Accept: 'application/json' },
+    })
+    if (!res.ok) { stat.errors.push(`Kings: NBA CDN HTTP ${res.status}`); return [] }
+
+    const json = await res.json() as Record<string, unknown>
+    const leagueSchedule = json['leagueSchedule'] as Record<string, unknown> | undefined
+    const gameDates = Array.isArray(leagueSchedule?.['gameDates']) ? leagueSchedule!['gameDates'] as unknown[] : []
+
+    const yesterday = new Date(Date.now() - 86_400_000)
+    const ninetyDaysOut = new Date(Date.now() + 90 * 86_400_000)
+    const events: Record<string, unknown>[] = []
+    let totalGames = 0
+
+    for (const dateEntry of gameDates) {
+      const d = dateEntry as Record<string, unknown>
+      const games = Array.isArray(d['games']) ? d['games'] as unknown[] : []
+      totalGames += games.length
+
+      for (const raw of games) {
+        const game = raw as Record<string, unknown>
+        const homeTeam = game['homeTeam'] as Record<string, unknown> | undefined
+        const awayTeam = game['awayTeam'] as Record<string, unknown> | undefined
+
+        // Only Sacramento Kings home games (team ID 1610612758 or check teamName)
+        const homeSlug = typeof homeTeam?.['teamSlug'] === 'string' ? homeTeam['teamSlug'] as string : ''
+        const homeName = typeof homeTeam?.['teamName'] === 'string' ? homeTeam['teamName'] as string : ''
+        if (homeSlug !== 'kings' && !homeName.includes('Kings')) continue
+
+        const awayName = typeof awayTeam?.['teamName'] === 'string' ? awayTeam['teamName'] as string : 'Visiting Team'
+        const awayCity = typeof awayTeam?.['teamCity'] === 'string' ? awayTeam['teamCity'] as string : ''
+
+        const gameDateStr = typeof game['gameDateTimeUTC'] === 'string' ? game['gameDateTimeUTC'] as string : null
+        if (!gameDateStr) continue
+        const startDt = new Date(gameDateStr)
+        if (isNaN(startDt.getTime()) || startDt < yesterday || startDt > ninetyDaysOut) continue
+
+        const gameId = typeof game['gameId'] === 'string' ? game['gameId'] as string : String(Math.random()).slice(2, 12)
+        const endDt  = new Date(startDt.getTime() + 3 * 60 * 60 * 1_000)
+        const tags   = ['sports', 'basketball', 'family-friendly']
+
+        events.push({
+          title:           `Sacramento Kings vs. ${awayCity} ${awayName}`.slice(0, 200),
+          description:     'Sacramento Kings NBA home game at Golden 1 Center.',
+          category:        'events',
+          subcategory:     'sports',
+          location_name:   'Golden 1 Center',
+          address:         GOLDEN1_ADDR,
+          city:            'Sacramento',
+          region:          'sacramento',
+          latitude:        GOLDEN1_LAT,
+          longitude:       GOLDEN1_LNG,
+          start_time:      startDt.toISOString(),
+          end_time:        endDt.toISOString(),
+          external_link:   'https://www.nba.com/kings/schedule',
+          flyer_image_url: null,
+          source:          'sacramento-kings',
+          source_type:     'sacramento-kings',
+          source_url:      url,
+          external_id:     `sac-kings-${gameId}`,
+          tags,
+          last_seen_at:    new Date().toISOString(),
+        })
+      }
+    }
+
+    stat.fetched = totalGames
+    stat.parsed  = events.length
+    return events
+  } catch (err) {
+    stat.errors.push(`Sacramento Kings fetch failed: ${(err as Error).message}`)
+    return []
+  }
+}
+
+// ── Source: Sacramento Republic FC (USL — JSON-LD) ───────────────────────────
+
+async function fetchSacRepublic(stat: SourceStat): Promise<Record<string, unknown>[]> {
+  const url = 'https://www.sacrepublicfc.com/schedule'
+  const HEART_LAT  = 38.5461
+  const HEART_LNG  = -121.4682
+  const HEART_ADDR = '1600 Exposition Blvd, Sacramento, CA 95815'
+
+  try {
+    const res = await fetchWithRetry(
+      url,
+      {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+          Accept: 'text/html,application/xhtml+xml',
+        },
+      },
+      25_000
+    )
+    if (!res.ok) { stat.errors.push(`Sac Republic HTTP ${res.status}`); return [] }
+    const html = await res.text()
+
+    const ldEvents = extractJsonLdEvents(html)
+    stat.fetched = ldEvents.length
+
+    if (ldEvents.length > 0) {
+      const yesterday = new Date(Date.now() - 86_400_000)
+      const events: Record<string, unknown>[] = []
+
+      for (const ev of ldEvents) {
+        const name = typeof ev['name'] === 'string' ? ev['name'].trim() : null
+        if (!name) continue
+
+        // Only home games — check location or title for "vs" (home) not "at" (away)
+        const locObj  = ev['location'] as Record<string, unknown> | undefined
+        const locName = typeof locObj?.['name'] === 'string' ? locObj['name'] as string : ''
+        const isHome  = /sacramento|heart\s*health|papa\s*murphy/i.test(locName) || /\bvs\.?\b/i.test(name)
+        const isAway  = /\bat\b/i.test(name) && !isHome
+        if (isAway) { stat.skipped++; continue }
+
+        const startStr = typeof ev['startDate'] === 'string' ? ev['startDate'] : null
+        if (!startStr) continue
+        const startDt = new Date(startStr)
+        if (isNaN(startDt.getTime()) || startDt < yesterday) continue
+
+        const endStr = typeof ev['endDate'] === 'string' ? ev['endDate'] : null
+        const endDt  = endStr ? new Date(endStr) : new Date(startDt.getTime() + 2.5 * 60 * 60 * 1000)
+
+        const evUrl = typeof ev['url'] === 'string' ? ev['url'] : url
+        const slug  = evUrl.replace(/^https?:\/\/[^/]+/, '').replace(/[^a-z0-9]/gi, '-').slice(0, 80)
+        const tags  = ['sports', 'soccer', 'family-friendly']
+
+        events.push({
+          title:           name.slice(0, 200),
+          description:     'Sacramento Republic FC home match at Heart Health Park.',
+          category:        'events',
+          subcategory:     'sports',
+          location_name:   'Heart Health Park',
+          address:         HEART_ADDR,
+          city:            'Sacramento',
+          region:          'sacramento',
+          latitude:        HEART_LAT,
+          longitude:       HEART_LNG,
+          start_time:      startDt.toISOString(),
+          end_time:        endDt && !isNaN(endDt.getTime()) ? endDt.toISOString() : null,
+          external_link:   evUrl,
+          flyer_image_url: null,
+          source:          'sac-republic',
+          source_type:     'sac-republic',
+          source_url:      evUrl,
+          external_id:     `sac-republic-${slug}`,
+          tags,
+          last_seen_at:    new Date().toISOString(),
+        })
+      }
+      stat.parsed = events.length
+      return events
+    }
+
+    // No JSON-LD — try parsing HTML schedule table (common USL pattern)
+    stat.no_insert_reason = 'No JSON-LD events found on schedule page'
+    return []
+  } catch (err) {
+    stat.errors.push(`Sac Republic fetch failed: ${(err as Error).message}`)
+    return []
+  }
+}
+
+// ── Source: Sac State Events (Localist RSS) ──────────────────────────────────
+
+async function fetchSacState(stat: SourceStat): Promise<Record<string, unknown>[]> {
+  // Sac State may use Localist (events.csus.edu) like UCD Library
+  const url = 'https://events.csus.edu/calendar/1.xml'
+  const SAC_STATE_LAT = 38.5607
+  const SAC_STATE_LNG = -121.4229
+  try {
+    const res = await fetchWithRetry(url, {
+      headers: { 'User-Agent': UA, Accept: 'application/rss+xml,text/xml' },
+    })
+    if (!res.ok) {
+      stat.errors.push(`Sac State HTTP ${res.status} — source may not use Localist`)
+      return []
+    }
+    const xml = await res.text()
+    if (!xml.includes('<rss') && !xml.includes('<item>')) {
+      stat.errors.push('Sac State: response is not RSS')
+      return []
+    }
+
+    const blocks = xml.match(/<item>[\s\S]*?<\/item>/g) ?? []
+    stat.fetched = blocks.length
+
+    const yesterday = new Date(Date.now() - 86_400_000)
+    const events: Record<string, unknown>[] = []
+
+    for (const itemXml of blocks) {
+      const rawTitle = xmlGet(itemXml, 'title')
+      if (!rawTitle) continue
+      const decode = (s: string) => s
+        .replace(/&amp;/g, '&').replace(/&apos;/g, "'").replace(/&#039;/g, "'")
+        .replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+      const title = decode(rawTitle.replace(/^[A-Z][a-z]{2}\s+\d{1,2},\s+\d{4}:\s*/, '').trim())
+      if (!title) continue
+
+      const dcDate = xmlGet(itemXml, 'dc:date')
+      if (!dcDate) continue
+      const startDt = new Date(dcDate)
+      if (isNaN(startDt.getTime())) continue
+      if (startDt < yesterday) continue
+
+      const link     = xmlGet(itemXml, 'link')
+      const imageUrl = xmlAttr(itemXml, 'media:content', 'url')
+      const category = xmlGet(itemXml, 'category') ?? ''
+      const guid     = xmlGet(itemXml, 'guid') ?? ''
+
+      const slugMatch  = link?.match(/\/event\/([^/?#]+)/)
+      const slug       = slugMatch?.[1] ?? null
+      const external_id = slug
+        ? `sac-state-${slug}`
+        : `sac-state-${guid.replace(/[^a-z0-9]/gi, '-').replace(/-+/g, '-').slice(-40)}`
+
+      const desc      = xmlGet(itemXml, 'description') ?? ''
+      const isVirtual = /virtual|zoom|online/i.test(title + ' ' + desc)
+
+      const tags = ['student-friendly']
+      if (/free|no cost|complimentary/i.test(desc + ' ' + rawTitle)) tags.push('free')
+      if (isVirtual) tags.push('virtual')
+
+      events.push({
+        title:           title.slice(0, 200),
+        description:     null,
+        category:        'events',
+        subcategory:     categorizeEvent(title, category),
+        location_name:   isVirtual ? 'Virtual / Zoom' : 'Sacramento State',
+        address:         isVirtual ? 'Online' : '6000 J St, Sacramento, CA 95819',
+        city:            'Sacramento',
+        region:          'sacramento',
+        latitude:        isVirtual ? null : SAC_STATE_LAT,
+        longitude:       isVirtual ? null : SAC_STATE_LNG,
+        start_time:      startDt.toISOString(),
+        end_time:        null,
+        external_link:   link ?? 'https://events.csus.edu',
+        flyer_image_url: imageUrl ?? null,
+        source:          'sac-state',
+        source_type:     'sac-state',
+        source_url:      link ?? url,
+        external_id,
+        tags,
+        last_seen_at:    new Date().toISOString(),
+      })
+    }
+    stat.parsed = events.length
+    return events
+  } catch (err) {
+    stat.errors.push(`Sac State fetch failed: ${(err as Error).message}`)
+    return []
+  }
+}
+
+// ── Source: City of Folsom Events (ICS) ──────────────────────────────────────
+
+async function fetchFolsomCity(stat: SourceStat): Promise<Record<string, unknown>[]> {
+  // Try common The Events Calendar ICS pattern
+  const url = 'https://events.cityoffolsom.com/events/?ical=1'
+  const DEFAULT_LAT = 38.6779
+  const DEFAULT_LNG = -121.1760
+  try {
+    const res = await fetchWithRetry(url, {
+      headers: { 'User-Agent': UA, Accept: 'text/calendar, text/plain, */*' },
+    })
+    if (!res.ok) {
+      // Try alternate URL pattern
+      stat.errors.push(`Folsom City HTTP ${res.status} — trying alternate URL`)
+      return []
+    }
+    const text = await res.text()
+    if (!text.includes('BEGIN:VCALENDAR')) {
+      stat.errors.push('Folsom City: response is not ICS')
+      return []
+    }
+
+    const icsEvents = parseICS(text)
+    stat.fetched = icsEvents.length
+
+    const events: Record<string, unknown>[] = []
+    for (const ev of icsEvents) {
+      if (!ev.dtstart) continue
+      const external_id = `folsom-city-${icsUidToSlug(ev.uid)}`
+      const body = (ev.summary + ' ' + (ev.description ?? '')).toLowerCase()
+      const tags = ['community']
+      if (/free|no cost|complimentary/i.test(body)) tags.push('free')
+      if (/outdoor|park|lake|trail/i.test(body)) tags.push('outdoor')
+
+      events.push({
+        title:           ev.summary.slice(0, 200),
+        description:     ev.description ?? null,
+        category:        'events',
+        subcategory:     categorizeEvent(ev.summary, ev.description ?? ''),
+        location_name:   ev.location ?? 'Folsom, CA',
+        address:         ev.location ? `${ev.location}, Folsom, CA` : 'Folsom, CA 95630',
+        city:            'Folsom',
+        region:          'sacramento',
+        latitude:        DEFAULT_LAT,
+        longitude:       DEFAULT_LNG,
+        start_time:      ev.dtstart.toISOString(),
+        end_time:        ev.dtend?.toISOString() ?? null,
+        external_link:   ev.url ?? 'https://events.cityoffolsom.com/',
+        flyer_image_url: null,
+        source:          'folsom-city',
+        source_type:     'folsom-city',
+        source_url:      ev.url ?? url,
+        external_id,
+        tags,
+        last_seen_at:    new Date().toISOString(),
+      })
+    }
+    stat.parsed = events.length
+    return events
+  } catch (err) {
+    stat.errors.push(`Folsom City fetch failed: ${(err as Error).message}`)
+    return []
+  }
+}
+
+// ── Source: City of Roseville Events (CivicPlus ICS) ─────────────────────────
+
+async function fetchRosevilleCity(stat: SourceStat): Promise<Record<string, unknown>[]> {
+  const url = 'https://www.roseville.ca.us/cms/one.aspx?portalId=7964922&pageId=8936494&objectId.200942=8774698&contextId.200942=8936549&parentId.200942=8936550&mode=ical'
+  const DEFAULT_LAT = 38.7521
+  const DEFAULT_LNG = -121.2880
+  try {
+    const res = await fetchWithRetry(url, {
+      headers: { 'User-Agent': UA, Accept: 'text/calendar, text/plain, */*' },
+    })
+    if (!res.ok) { stat.errors.push(`Roseville City HTTP ${res.status}`); return [] }
+    const text = await res.text()
+    if (!text.includes('BEGIN:VCALENDAR')) {
+      stat.errors.push('Roseville City: response is not ICS')
+      return []
+    }
+
+    const icsEvents = parseICS(text)
+    stat.fetched = icsEvents.length
+
+    const events: Record<string, unknown>[] = []
+    for (const ev of icsEvents) {
+      if (!ev.dtstart) continue
+      const external_id = `roseville-city-${icsUidToSlug(ev.uid)}`
+      const body = (ev.summary + ' ' + (ev.description ?? '')).toLowerCase()
+      const tags = ['community']
+      if (/free|no cost|complimentary/i.test(body)) tags.push('free')
+      if (/outdoor|park|trail/i.test(body)) tags.push('outdoor')
+
+      events.push({
+        title:           ev.summary.slice(0, 200),
+        description:     ev.description ?? null,
+        category:        'events',
+        subcategory:     categorizeEvent(ev.summary, ev.description ?? ''),
+        location_name:   ev.location ?? 'Roseville, CA',
+        address:         ev.location ? `${ev.location}, Roseville, CA` : 'Roseville, CA 95678',
+        city:            'Roseville',
+        region:          'sacramento',
+        latitude:        DEFAULT_LAT,
+        longitude:       DEFAULT_LNG,
+        start_time:      ev.dtstart.toISOString(),
+        end_time:        ev.dtend?.toISOString() ?? null,
+        external_link:   ev.url ?? 'https://www.roseville.ca.us/government/departments/parks_recreation_and_libraries/events_activities',
+        flyer_image_url: null,
+        source:          'roseville-city',
+        source_type:     'roseville-city',
+        source_url:      ev.url ?? url,
+        external_id,
+        tags,
+        last_seen_at:    new Date().toISOString(),
+      })
+    }
+    stat.parsed = events.length
+    return events
+  } catch (err) {
+    stat.errors.push(`Roseville City fetch failed: ${(err as Error).message}`)
+    return []
+  }
+}
+
+// ── Source: Visit Napa Valley Events (JSON-LD) ───────────────────────────────
+
+async function fetchNapaValley(stat: SourceStat): Promise<Record<string, unknown>[]> {
+  const url = 'https://www.visitnapavalley.com/events/'
+  const DEFAULT_LAT = 38.2975
+  const DEFAULT_LNG = -122.2869
+  try {
+    const res = await fetchWithRetry(url, {
+      headers: { 'User-Agent': UA, Accept: 'text/html,application/xhtml+xml' },
+    })
+    if (!res.ok) { stat.errors.push(`Napa Valley HTTP ${res.status}`); return [] }
+    const html = await res.text()
+
+    const ldEvents = extractJsonLdEvents(html)
+    stat.fetched = ldEvents.length
+
+    const events: Record<string, unknown>[] = []
+    for (const ev of ldEvents) {
+      const parsed = parseJsonLdEvent(ev, 'napa-valley-events', url, {
+        city:    'Napa',
+        region:  'napa',
+        latitude:  DEFAULT_LAT,
+        longitude: DEFAULT_LNG,
+      })
+      if (parsed) events.push(parsed)
+    }
+    stat.parsed = events.length
+
+    if (events.length === 0 && ldEvents.length === 0) {
+      stat.no_insert_reason = 'No JSON-LD events found — page may use client-side rendering'
+    }
+    return events
+  } catch (err) {
+    stat.errors.push(`Napa Valley fetch failed: ${(err as Error).message}`)
+    return []
+  }
+}
+
 // ── Ingestion log helper ──────────────────────────────────────────────────────
 
 /**
@@ -1711,6 +2464,16 @@ export async function GET(request: NextRequest) {
     woodland_city:      makeStat(),
     meetup_sacramento:  makeStat(),
     visit_yolo:         makeStat(),
+    // 100-mile expansion (2026-04-14)
+    eventbrite_sacramento: makeStat(),
+    eventbrite_nightlife:  makeStat(),
+    meetup_davis:          makeStat(),
+    sacramento_kings:      makeStat(),
+    sac_republic:          makeStat(),
+    sac_state:             makeStat(),
+    folsom_city:           makeStat(),
+    roseville_city:        makeStat(),
+    napa_valley:           makeStat(),
     // WAF-blocked — kept in stats so they appear in logs with clear reason
     arboretum:          makeStat(),
     manetti:            makeStat(),
@@ -1725,6 +2488,11 @@ export async function GET(request: NextRequest) {
       eventbriteEvents, visitDavisEvents, ucdEvents,
       athleticsEvents, riverCatsEvents, oldSacEvents,
       crockerEvents, woodlandEvents, meetupEvents, visitYoloEvents,
+      // 100-mile expansion
+      ebSacEvents, ebNightlifeEvents, meetupDavisEvents,
+      kingsEvents, republicEvents, sacStateEvents,
+      folsomEvents, rosevilleEvents, napaEvents,
+      // WAF-blocked
       arboretumEvents, manettiEvents, affairsEvents,
     ] = await Promise.allSettled([
       fetchLibrary(stats.ucd_library),
@@ -1740,6 +2508,17 @@ export async function GET(request: NextRequest) {
       fetchWoodlandCity(stats.woodland_city),
       fetchMeetupSacramento(stats.meetup_sacramento),
       fetchVisitYolo(stats.visit_yolo),
+      // 100-mile expansion
+      fetchEventbriteSacramento(stats.eventbrite_sacramento),
+      fetchEventbriteNightlife(stats.eventbrite_nightlife),
+      fetchMeetupDavis(stats.meetup_davis),
+      fetchSacramentoKings(stats.sacramento_kings),
+      fetchSacRepublic(stats.sac_republic),
+      fetchSacState(stats.sac_state),
+      fetchFolsomCity(stats.folsom_city),
+      fetchRosevilleCity(stats.roseville_city),
+      fetchNapaValley(stats.napa_valley),
+      // WAF-blocked
       fetchArboretum(stats.arboretum),
       fetchManettiShrem(stats.manetti),
       fetchUCDStudentAffairs(stats.ucd_affairs),
@@ -1766,6 +2545,17 @@ export async function GET(request: NextRequest) {
     await upsertEvents(supabase, stamp(lf(woodlandEvents,      'woodland-city',       stats.woodland_city)),      'woodland-city',       stats.woodland_city)
     await upsertEvents(supabase, stamp(lf(meetupEvents,        'meetup-sacramento',   stats.meetup_sacramento)),  'meetup-sacramento',   stats.meetup_sacramento)
     await upsertEvents(supabase, stamp(lf(visitYoloEvents,     'visit-yolo',          stats.visit_yolo)),         'visit-yolo',          stats.visit_yolo)
+    // 100-mile expansion
+    await upsertEvents(supabase, stamp(lf(ebSacEvents,        'eventbrite-sacramento', stats.eventbrite_sacramento)), 'eventbrite-sacramento', stats.eventbrite_sacramento)
+    await upsertEvents(supabase, stamp(lf(ebNightlifeEvents,  'eventbrite-nightlife',  stats.eventbrite_nightlife)),  'eventbrite-nightlife',  stats.eventbrite_nightlife)
+    await upsertEvents(supabase, stamp(lf(meetupDavisEvents,  'meetup-davis',          stats.meetup_davis)),          'meetup-davis',          stats.meetup_davis)
+    await upsertEvents(supabase, stamp(lf(kingsEvents,        'sacramento-kings',      stats.sacramento_kings)),      'sacramento-kings',      stats.sacramento_kings)
+    await upsertEvents(supabase, stamp(lf(republicEvents,     'sac-republic',          stats.sac_republic)),          'sac-republic',          stats.sac_republic)
+    await upsertEvents(supabase, stamp(lf(sacStateEvents,     'sac-state',             stats.sac_state)),             'sac-state',             stats.sac_state)
+    await upsertEvents(supabase, stamp(lf(folsomEvents,       'folsom-city',           stats.folsom_city)),           'folsom-city',           stats.folsom_city)
+    await upsertEvents(supabase, stamp(lf(rosevilleEvents,    'roseville-city',        stats.roseville_city)),        'roseville-city',        stats.roseville_city)
+    await upsertEvents(supabase, stamp(lf(napaEvents,         'napa-valley-events',    stats.napa_valley)),           'napa-valley-events',    stats.napa_valley)
+    // WAF-blocked
     await upsertEvents(supabase, stamp(lf(arboretumEvents,     'ucd-arboretum',       stats.arboretum)),          'ucd-arboretum',       stats.arboretum)
     await upsertEvents(supabase, stamp(lf(manettiEvents,       'manetti-shrem',       stats.manetti)),            'manetti-shrem',       stats.manetti)
     await upsertEvents(supabase, stamp(lf(affairsEvents,       'ucd-student-affairs', stats.ucd_affairs)),        'ucd-student-affairs', stats.ucd_affairs)
@@ -1810,6 +2600,17 @@ export async function GET(request: NextRequest) {
       writeLog(supabase, 'woodland-city',       stats.woodland_city,     runAt),
       writeLog(supabase, 'meetup-sacramento',   stats.meetup_sacramento, runAt),
       writeLog(supabase, 'visit-yolo',          stats.visit_yolo,        runAt),
+      // 100-mile expansion
+      writeLog(supabase, 'eventbrite-sacramento', stats.eventbrite_sacramento, runAt),
+      writeLog(supabase, 'eventbrite-nightlife',  stats.eventbrite_nightlife,  runAt),
+      writeLog(supabase, 'meetup-davis',          stats.meetup_davis,          runAt),
+      writeLog(supabase, 'sacramento-kings',      stats.sacramento_kings,      runAt),
+      writeLog(supabase, 'sac-republic',          stats.sac_republic,          runAt),
+      writeLog(supabase, 'sac-state',             stats.sac_state,             runAt),
+      writeLog(supabase, 'folsom-city',           stats.folsom_city,           runAt),
+      writeLog(supabase, 'roseville-city',        stats.roseville_city,        runAt),
+      writeLog(supabase, 'napa-valley-events',    stats.napa_valley,           runAt),
+      // WAF-blocked
       writeLog(supabase, 'ucd-arboretum',       stats.arboretum,         runAt),
       writeLog(supabase, 'manetti-shrem',       stats.manetti,           runAt),
       writeLog(supabase, 'ucd-student-affairs', stats.ucd_affairs,       runAt),
@@ -1830,7 +2631,7 @@ export async function GET(request: NextRequest) {
       updated:        sum('updated'),
       skipped:        sum('skipped'),
       failed:         sum('failed'),
-      sources_active: 13,  // healthy + weak sources (6 original + 7 new)
+      sources_active: 22,  // 13 original + 9 expansion sources
       sources_total:  Object.keys(stats).length,
     }
 
