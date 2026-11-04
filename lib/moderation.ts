@@ -16,11 +16,12 @@
 import Anthropic from '@anthropic-ai/sdk'
 
 export interface ModerationResult {
-  safety_level: 'safe' | 'medium' | 'high'
-  confidence: number       // 0.0 – 1.0
+  status: 'completed' | 'unavailable'
+  safety_level: 'safe' | 'medium' | 'high' | null
+  confidence: number | null // 0.0 – 1.0
   reason: string           // short explanation
-  risk_score: number       // 0 – 100
-  category_match: boolean  // does content match the chosen category?
+  risk_score: number | null // 0 – 100
+  category_match: boolean | null // does content match the chosen category?
   auto_flag: boolean       // true if status should become 'flagged'
 }
 
@@ -35,11 +36,12 @@ export interface SubmissionToModerate {
 }
 
 const FALLBACK: ModerationResult = {
-  safety_level: 'safe',
-  confidence: 0.5,
+  status: 'unavailable',
+  safety_level: null,
+  confidence: null,
   reason: 'AI moderation unavailable — requires manual review.',
-  risk_score: 20,
-  category_match: true,
+  risk_score: null,
+  category_match: null,
   auto_flag: false,
 }
 
@@ -47,10 +49,10 @@ export async function moderateSubmission(
   item: SubmissionToModerate
 ): Promise<ModerationResult> {
   const apiKey = process.env.ANTHROPIC_API_KEY
-  if (!apiKey) return FALLBACK
+  if (!apiKey || process.env.AI_FEATURES_ENABLED === 'false') return { ...FALLBACK }
 
   try {
-    const client = new Anthropic({ apiKey })
+    const client = new Anthropic({ apiKey, timeout: 8_000, maxRetries: 0 })
 
     const prompt = `You are a content moderator for Aggie Map, a UC Davis campus events and places app for students.
 
@@ -92,26 +94,36 @@ risk_score guide: 0-30 = safe, 31-65 = medium concern, 66-100 = high risk / like
 
     // Extract JSON from response (handles cases where model adds extra text)
     const jsonMatch = text.match(/\{[\s\S]*\}/)
-    if (!jsonMatch) return FALLBACK
+    if (!jsonMatch) return { ...FALLBACK }
 
     const parsed = JSON.parse(jsonMatch[0])
 
-    const risk_score = Math.min(100, Math.max(0, Number(parsed.risk_score) || 20))
-    const safety_level: ModerationResult['safety_level'] =
-      parsed.safety_level === 'high' ? 'high'
-        : parsed.safety_level === 'medium' ? 'medium'
-        : 'safe'
+    // A missing, truncated or malformed verdict is NOT a successful safety check.
+    if (response.stop_reason !== 'end_turn' ||
+        !['safe', 'medium', 'high'].includes(parsed.safety_level) ||
+        typeof parsed.confidence !== 'number' || !Number.isFinite(parsed.confidence) ||
+        parsed.confidence < 0 || parsed.confidence > 1 ||
+        typeof parsed.risk_score !== 'number' || !Number.isInteger(parsed.risk_score) ||
+        parsed.risk_score < 0 || parsed.risk_score > 100 ||
+        typeof parsed.category_match !== 'boolean' ||
+        typeof parsed.reason !== 'string' || !parsed.reason.trim()) return { ...FALLBACK }
+
+    const risk_score = parsed.risk_score
+    const safety_level = risk_score >= 66 ? 'high' : risk_score >= 31 ? 'medium' : 'safe'
+    if (parsed.safety_level !== safety_level) return { ...FALLBACK }
 
     return {
+      status: 'completed',
       safety_level,
-      confidence: Math.min(1, Math.max(0, Number(parsed.confidence) || 0.5)),
-      reason: String(parsed.reason ?? 'No reason provided').slice(0, 500),
+      confidence: parsed.confidence,
+      reason: parsed.reason.trim().slice(0, 500),
       risk_score,
-      category_match: parsed.category_match !== false,
+      category_match: parsed.category_match,
       auto_flag: risk_score >= 66,
     }
   } catch (err) {
-    console.warn('[moderation] AI check failed:', (err as Error).message)
-    return FALLBACK
+    // Do not log provider messages: they may contain submitted content.
+    console.warn('[moderation] AI unavailable', { status: err instanceof Anthropic.APIError ? err.status : undefined })
+    return { ...FALLBACK }
   }
 }

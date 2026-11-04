@@ -174,7 +174,7 @@ export default function SubmitForm() {
           return
         }
         if (res.status === 503) {
-          setAnalyzeError("AI analysis isn't available right now. Try uploading a screenshot instead.")
+          setAnalyzeError("AI analysis isn't available right now. Fill in the form manually.")
           return
         }
         setAnalyzeError('Could not analyze this link. Try uploading a screenshot instead.')

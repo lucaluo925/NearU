@@ -3,8 +3,6 @@ import Anthropic from '@anthropic-ai/sdk'
 import { getSessionUser } from '@/lib/auth-helper'
 import { limiters, getRequestKey, rateLimitResponse, guardBodySize } from '@/lib/rate-limit'
 
-const client = new Anthropic()
-
 export async function POST(request: NextRequest) {
   // Require an authenticated session — this endpoint calls a paid external API
   // and must not be publicly accessible to prevent cost-abuse.
@@ -22,8 +20,8 @@ export async function POST(request: NextRequest) {
   if (rl.limited) return rateLimitResponse(rl.resetIn)
 
   const apiKey = process.env.ANTHROPIC_API_KEY
-  if (!apiKey) {
-    return NextResponse.json({ error: 'AI analysis not configured' }, { status: 503 })
+  if (!apiKey || process.env.AI_FEATURES_ENABLED === 'false') {
+    return NextResponse.json({ error: 'AI analysis unavailable. Fill in the form manually.', code: 'AI_UNAVAILABLE' }, { status: 503 })
   }
 
   let imageUrl: string | undefined
@@ -61,6 +59,7 @@ export async function POST(request: NextRequest) {
     : ({ type: 'url', url: imageUrl! } as const)
 
   try {
+    const client = new Anthropic({ apiKey, timeout: 8_000, maxRetries: 0 })
     const message = await client.messages.create({
       model: 'claude-haiku-4-5-20251001',
       max_tokens: 1024,
@@ -115,15 +114,24 @@ Key extraction rules:
       ],
     })
 
-    const raw = message.content[0].type === 'text' ? message.content[0].text.trim() : ''
+    const raw = message.content[0]?.type === 'text' ? message.content[0].text.trim() : ''
     // Strip any accidental markdown fences
     const cleaned = raw.replace(/^```[a-z]*\n?/i, '').replace(/\n?```$/i, '').trim()
     const jsonMatch = cleaned.match(/\{[\s\S]*\}/)
     if (!jsonMatch) throw new Error('No JSON in response')
     const parsed = JSON.parse(jsonMatch[0])
+    if (message.stop_reason !== 'end_turn' || !parsed ||
+        typeof parsed.title !== 'string' || !parsed.title.trim() ||
+        typeof parsed.description !== 'string' ||
+        !['events', 'food', 'outdoor', 'study', 'shopping', 'campus'].includes(parsed.category) ||
+        typeof parsed.subcategory !== 'string' ||
+        !Array.isArray(parsed.tags) || !parsed.tags.every((tag: unknown) => typeof tag === 'string') ||
+        !['start_time', 'end_time', 'location_name', 'address'].every(
+          key => parsed[key] === null || typeof parsed[key] === 'string'
+        )) throw new Error('Invalid analysis result')
     return NextResponse.json(parsed)
   } catch (err) {
-    console.error('Flyer analysis error:', err)
-    return NextResponse.json({ error: 'Analysis failed' }, { status: 500 })
+    console.warn('[analyze-flyer] AI unavailable', { status: err instanceof Anthropic.APIError ? err.status : undefined })
+    return NextResponse.json({ error: 'AI analysis unavailable. Fill in the form manually.', code: 'AI_UNAVAILABLE' }, { status: 503 })
   }
 }
