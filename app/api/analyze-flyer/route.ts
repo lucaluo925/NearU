@@ -4,6 +4,7 @@ import { getSessionUser } from '@/lib/auth-helper'
 import { limiters, getRequestKey, rateLimitResponse, guardBodySize } from '@/lib/rate-limit'
 
 export async function POST(request: NextRequest) {
+  // DeepSeek supports this SDK format, including image blocks.
   // Require an authenticated session — this endpoint calls a paid external API
   // and must not be publicly accessible to prevent cost-abuse.
   const user = await getSessionUser(request)
@@ -15,11 +16,11 @@ export async function POST(request: NextRequest) {
   const sizeErr = guardBodySize(request, 8_000_000)
   if (sizeErr) return sizeErr
 
-  // Rate limit: 10 per user per hour (Claude API costs real money)
+  // Rate limit: 10 per user per hour (model API calls incur usage charges)
   const rl = limiters.analyzeFlyer.check(getRequestKey(request, user.id))
   if (rl.limited) return rateLimitResponse(rl.resetIn)
 
-  const apiKey = process.env.ANTHROPIC_API_KEY
+  const apiKey = process.env.DEEPSEEK_API_KEY
   if (!apiKey || process.env.AI_FEATURES_ENABLED === 'false') {
     return NextResponse.json({ error: 'AI analysis unavailable. Fill in the form manually.', code: 'AI_UNAVAILABLE' }, { status: 503 })
   }
@@ -59,9 +60,16 @@ export async function POST(request: NextRequest) {
     : ({ type: 'url', url: imageUrl! } as const)
 
   try {
-    const client = new Anthropic({ apiKey, timeout: 8_000, maxRetries: 0 })
+    const client = new Anthropic({
+      apiKey,
+      authToken: null,
+      baseURL: 'https://api.deepseek.com/anthropic',
+      timeout: 8_000,
+      maxRetries: 0,
+    })
     const message = await client.messages.create({
-      model: 'claude-haiku-4-5-20251001',
+      model: 'deepseek-flash',
+      thinking: { type: 'disabled' },
       max_tokens: 1024,
       messages: [
         {

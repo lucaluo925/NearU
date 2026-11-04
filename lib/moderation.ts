@@ -1,7 +1,7 @@
 /**
  * AI-assisted content moderation for Aggie Map user submissions.
  *
- * Uses Anthropic Claude to evaluate submissions for:
+ * Uses DeepSeek Flash through its Anthropic-compatible API to evaluate submissions for:
  * - Inappropriate / unsafe content
  * - Spam or off-topic content
  * - Scams or misleading info
@@ -48,11 +48,17 @@ const FALLBACK: ModerationResult = {
 export async function moderateSubmission(
   item: SubmissionToModerate
 ): Promise<ModerationResult> {
-  const apiKey = process.env.ANTHROPIC_API_KEY
+  const apiKey = process.env.DEEPSEEK_API_KEY
   if (!apiKey || process.env.AI_FEATURES_ENABLED === 'false') return { ...FALLBACK }
 
   try {
-    const client = new Anthropic({ apiKey, timeout: 8_000, maxRetries: 0 })
+    const client = new Anthropic({
+      apiKey,
+      authToken: null,
+      baseURL: 'https://api.deepseek.com/anthropic',
+      timeout: 8_000,
+      maxRetries: 0,
+    })
 
     const prompt = `You are a content moderator for Aggie Map, a UC Davis campus events and places app for students.
 
@@ -85,7 +91,8 @@ Return exactly this JSON shape:
 risk_score guide: 0-30 = safe, 31-65 = medium concern, 66-100 = high risk / likely problematic`
 
     const response = await client.messages.create({
-      model: 'claude-haiku-4-5',
+      model: 'deepseek-flash',
+      thinking: { type: 'disabled' },
       max_tokens: 256,
       messages: [{ role: 'user', content: prompt }],
     })

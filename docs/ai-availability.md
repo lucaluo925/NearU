@@ -1,6 +1,15 @@
 # AI availability and manual review
 
-Flyer extraction and submission moderation use the server-only `ANTHROPIC_API_KEY`.
+Flyer extraction and submission moderation use DeepSeek Flash with the server-only `DEEPSEEK_API_KEY`.
+The existing Anthropic SDK is a wire-format client only: requests are pinned to
+`https://api.deepseek.com/anthropic` with `model: deepseek-flash`, thinking disabled,
+and `authToken: null`. No request is sent to Anthropic and legacy Anthropic keys
+cannot enable these features.
+
+Official references verified on 2026-11-04:
+- https://api-docs.deepseek.com/guides/vision/
+- https://api-docs.deepseek.com/guides/anthropic_api/
+- https://api-docs.deepseek.com/quick_start/pricing/
 A Claude web/Code subscription is not an API credential. Do not copy subscription
 session tokens into the application or automatically switch to an unapproved vendor.
 
@@ -24,15 +33,25 @@ No database migration is needed: the existing risk_score column is nullable.
 The completion discriminator is internal; persisted null risk + explicit reason
 carry the unavailable state through the existing schema.
 
+## DeepSeek activation
+
+In Vercel project Settings → Environment Variables, add `DEEPSEEK_API_KEY` as
+a server-only sensitive variable in the intended environment, using a key from
+your DeepSeek account. Do not put it in chat, a NEXT_PUBLIC variable, source code
+or a PR. Confirm existing credits before enabling requests; this patch does not
+add funds or enable recurring payments. Redeploy after configuring the key.
+For preview verification, also configure a separate test Supabase environment.
+User-submitted text and images are sent to DeepSeek when the feature is used.
+
 ## Recovery options
 
 | Option | Cost and prerequisites | Operational behavior |
 | --- | --- | --- |
 | Keep manual entry/review | No model usage charges; requires review capacity | Reliable default when credentials or credits are unavailable |
-| Restore Anthropic | Verify the key's organization, credit status and model access; any funds require owner action | Smallest integration change; test both endpoints before enabling |
+| Enable DeepSeek Flash | Configure DEEPSEEK_API_KEY and verify existing balance; funds require owner action | Both endpoints now target the official DeepSeek API; live tests still required |
 | Reuse another authorized provider | Requires an actual API credential/budget, vision support for flyers and review of data handling | Add an explicit adapter and validate both schemas; do not assume chat subscriptions include API access |
 
-No provider or billing changes are included in this patch.
+The provider is migrated to DeepSeek. No credential or billing changes are included.
 
 ## Validation and rollout
 
@@ -50,6 +69,6 @@ No provider or billing changes are included in this patch.
    and confirm failed calls never create an approved listing. Promote only the verified
    deployment, and keep the previous deployment available for rollback.
 
-Tests cover missing keys, the kill switch, provider failures, malformed/truncated
+All 11 tests pass, including real SDK requests with a mocked transport for DeepSeek URL, credential isolation and base64/URL images. Tests also cover missing keys, the kill switch, provider failures, malformed/truncated
 output, valid zero scores, high-risk flags, endpoint guards, the flyer response
 contract, and pending submission persistence during a provider outage.
