@@ -47,7 +47,10 @@ function StatusBadge({ status }: { status?: ItemStatus }) {
 // ── Risk badge ────────────────────────────────────────────────────────────────
 
 function RiskBadge({ score, reason }: { score?: number | null; reason?: string | null }) {
-  if (score == null) return null
+  // Also recognize historical fallback rows that incorrectly stored a low score.
+  if (score == null || reason?.startsWith('AI moderation unavailable')) {
+    return <span className="text-[10px] font-semibold text-amber-700" title={reason ?? undefined}>AI not completed · Manual review</span>
+  }
   const level = score >= 66 ? 'high' : score >= 31 ? 'medium' : 'safe'
   const map = {
     safe:   { label: `Risk ${score}`, cls: 'bg-emerald-50 text-emerald-600', Icon: Shield },
@@ -130,7 +133,7 @@ function ItemCard({ item, onAction, busy, expanded, onToggle }: CardProps) {
       {item.moderation_reason && (
         <button onClick={onToggle} className="w-full flex items-center justify-between px-4 pb-2 text-left">
           <span className="text-[11px] text-[#9CA3AF] italic line-clamp-1">
-            AI: {item.moderation_reason}
+            Moderation: {item.moderation_reason}
           </span>
           <ChevronDown className={cn('w-3.5 h-3.5 text-[#C4C9D4] shrink-0 transition-transform', expanded && 'rotate-180')} />
         </button>
